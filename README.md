@@ -51,11 +51,12 @@ Auto strategy selection:
 - **raw bytes** → UltraFast
 - **extracted text** → Fast (unless you explicitly request Weighted)
 
-## Weighted Strategy (Tokenx + New-API)
-Weighted combines tokenx segmentation with new-api multipliers:
-- **Segmentation**: whitespace/punctuation splitting + category classification
-- **Weights**: OpenAI/Claude/Gemini profiles
-- **Fallback**: unknown providers/models → OpenAI weights
+## Weighted Strategy (TokenX v2)
+Weighted v2 starts from tokenx segmentation and applies light ratio tuning:
+- **Base**: tokenx segmentation count
+- **Adjustments**: CJK/punctuation/digit ratios with per-profile tuning
+- **Clamp**: bounded to avoid extreme drift
+- **Fallback**: unknown providers/models → OpenAI profile
 
 ## Profiles
 Profile resolution order:
@@ -73,8 +74,8 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 Caching is **off by default** and only applies to text >= 512 bytes.
 
 ## Comparison
-- **vs tokenx**: adds provider-aware weights + counts whitespace/newlines, avoiding systematic underestimation.
-- **vs new-api**: keeps tokenx-style segmentation (better for long words/code) while reusing the proven weight tables.
+- **vs tokenx**: keeps tokenx segmentation but adds ratio tuning to reduce mixed-text skew.
+- **vs new-api**: avoids per-word heuristics that swing on long words/compound words.
 - **vs tokenizer (tiktoken)**: lighter and faster, but approximate by design.
 
 ## Accuracy vs tiktoken
@@ -85,6 +86,7 @@ Caching is **off by default** and only applies to text >= 512 bytes.
 - **UltraFast** is coarse and may undercount CJK/code
 
 For a structured comparison and evaluation steps, see `ACCURACY.md`.
+To refit Weighted v2 on your own corpus, see `tokenest/tools/fit`.
 
 ## Notes
 - This library is intentionally **zero-dependency**.

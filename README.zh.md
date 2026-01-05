@@ -51,10 +51,11 @@ func main() {
 - **raw bytes** → UltraFast
 - **已提取文本** → Fast（除非显式指定 Weighted）
 
-## Weighted（tokenx + new-api 混合）
-- **结构**：沿用 tokenx 的分段/分类
-- **权重**：沿用 new-api 的 OpenAI/Claude/Gemini 权重表
-- **回落**：非“御三家”的模型统一回落到 OpenAI 权重
+## Weighted v2（基于 TokenX）
+- **基础**：沿用 tokenx 的分段/分类计数
+- **调整**：按 CJK/标点/数字比例做轻量系数修正
+- **限制**：结果做上下限夹紧，避免极端漂移
+- **回落**：非“御三家”的模型统一回落到 OpenAI Profile
 
 ## Profile 解析顺序
 1) `Options.Profile`（手动指定）
@@ -70,8 +71,8 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 默认不缓存，仅对 >=512 字节的文本启用缓存。
 
 ## 对比
-- **相比 tokenx**：增加供应商权重 + 计入空白/换行，避免低估。
-- **相比 new-api**：保留 tokenx 分段逻辑，对长词和代码更稳；权重沿用成熟表。
+- **相比 tokenx**：保留分段逻辑，并增加比例修正，减少混合文本偏差。
+- **相比 new-api**：避免按单词计数导致的长词/复合词波动。
 - **相比 tokenizer**：更轻更快，但本质是近似估算。
 
 ## 准确度 vs tiktoken
@@ -82,6 +83,7 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 - **UltraFast** 最粗糙，可能低估 CJK/代码
 
 更系统的对比方法和评估步骤见 `ACCURACY.md`。
+如需基于自有语料重新拟合 Weighted v2，参考 `tokenest/tools/fit`。
 
 ## 说明
 - 本库保持 **0 依赖**、轻量可移植。

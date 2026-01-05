@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	weightedV2ClampMin = 0.85
-	weightedV2ClampMax = 1.20
+	weightedV2ClampMin        = 0.85
+	weightedV2ClampMax        = 1.20
 	tokenXShortTokenThreshold = 3
 )
 
@@ -25,28 +25,28 @@ func tuningForProfile(profile Profile) weightedTuning {
 	switch profile {
 	case ProfileClaude:
 		return weightedTuning{
-			baseFactor:       1.00,
-			cjkRatioFactor:   0.00,
-			punctRatioFactor: 0.00,
-			digitRatioFactor: 0.00,
+			baseFactor:       0.9467,
+			cjkRatioFactor:   0.0514,
+			punctRatioFactor: -0.0616,
+			digitRatioFactor: 0.4569,
 			clampMin:         weightedV2ClampMin,
 			clampMax:         weightedV2ClampMax,
 		}
 	case ProfileGemini:
 		return weightedTuning{
-			baseFactor:       1.00,
-			cjkRatioFactor:   0.00,
-			punctRatioFactor: 0.00,
-			digitRatioFactor: 0.00,
+			baseFactor:       0.9467,
+			cjkRatioFactor:   0.0514,
+			punctRatioFactor: -0.0616,
+			digitRatioFactor: 0.4569,
 			clampMin:         weightedV2ClampMin,
 			clampMax:         weightedV2ClampMax,
 		}
 	default:
 		return weightedTuning{
-			baseFactor:       1.00,
-			cjkRatioFactor:   0.00,
-			punctRatioFactor: 0.00,
-			digitRatioFactor: 0.00,
+			baseFactor:       0.9467,
+			cjkRatioFactor:   0.0514,
+			punctRatioFactor: -0.0616,
+			digitRatioFactor: 0.4569,
 			clampMin:         weightedV2ClampMin,
 			clampMax:         weightedV2ClampMax,
 		}
