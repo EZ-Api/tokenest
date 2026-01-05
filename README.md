@@ -77,6 +77,15 @@ Caching is **off by default** and only applies to text >= 512 bytes.
 - **vs new-api**: keeps tokenx-style segmentation (better for long words/code) while reusing the proven weight tables.
 - **vs tokenizer (tiktoken)**: lighter and faster, but approximate by design.
 
+## Accuracy vs tiktoken
+`tokenest` is heuristic and will not exactly match tokenizer outputs. In general:
+
+- **Weighted** is closest (best for mixed text/code/CJK)
+- **Fast** is good for English and improves CJK/code vs UltraFast
+- **UltraFast** is coarse and may undercount CJK/code
+
+For a structured comparison and evaluation steps, see `ACCURACY.md`.
+
 ## Notes
 - This library is intentionally **zero-dependency**.
 - If you can preprocess text, accuracy improves, but it is not required.

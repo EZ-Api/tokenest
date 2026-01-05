@@ -74,6 +74,15 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 - **相比 new-api**：保留 tokenx 分段逻辑，对长词和代码更稳；权重沿用成熟表。
 - **相比 tokenizer**：更轻更快，但本质是近似估算。
 
+## 准确度 vs tiktoken
+`tokenest` 是启发式估算，无法与 tokenizer 完全一致。通常情况下：
+
+- **Weighted** 最接近（对混合文本/代码/CJK 最好）
+- **Fast** 英文表现好，较 UltraFast 对 CJK/代码更稳
+- **UltraFast** 最粗糙，可能低估 CJK/代码
+
+更系统的对比方法和评估步骤见 `ACCURACY.md`。
+
 ## 说明
 - 本库保持 **0 依赖**、轻量可移植。
 - 调用方预处理能提升准确度，但不是必需条件。
