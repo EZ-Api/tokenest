@@ -60,18 +60,18 @@ func TestWeightedExplainBreakdown(t *testing.T) {
 	}
 	found := false
 	for _, item := range res.Breakdown {
-		if item.Category == categoryNumber {
+		if item.Category == weightedV2CategoryBase {
 			found = true
 			if item.BaseUnits != 1 {
-				t.Fatalf("expected number base units 1, got %v", item.BaseUnits)
+				t.Fatalf("expected base units 1, got %v", item.BaseUnits)
 			}
-			if item.Weight != weightsForProfile(ProfileOpenAI).number {
-				t.Fatalf("unexpected number weight %v", item.Weight)
+			if item.Weight != tuningForProfile(ProfileOpenAI).baseFactor {
+				t.Fatalf("unexpected base weight %v", item.Weight)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected breakdown to include number category")
+		t.Fatalf("expected breakdown to include base category")
 	}
 }
 

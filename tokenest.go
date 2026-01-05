@@ -18,8 +18,8 @@ const (
 	// O(min(n, 1000)) complexity, suitable for preflight estimation.
 	StrategyFast
 
-	// StrategyWeighted uses full segment classification with profile weights.
-	// O(n) complexity, most accurate, suitable for usage fallback.
+	// StrategyWeighted uses tokenx-style segmentation with lightweight profile tuning.
+	// O(n) complexity, best balance of accuracy and throughput for usage fallback.
 	StrategyWeighted
 )
 

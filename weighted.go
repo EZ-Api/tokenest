@@ -8,7 +8,7 @@ import (
 
 const defaultCharsPerToken = 6.0
 
-func estimateWeighted(text string, profile Profile, explain bool, breakdown *[]CategoryBreakdown) int {
+func estimateWeightedLegacy(text string, profile Profile, explain bool, breakdown *[]CategoryBreakdown) int {
 	if text == "" {
 		return 0
 	}
