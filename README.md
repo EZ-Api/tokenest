@@ -51,8 +51,8 @@ Auto strategy selection:
 - **raw bytes** → UltraFast
 - **extracted text** → Fast (unless you explicitly request Weighted)
 
-## Weighted Strategy (TokenX v2)
-Weighted v2 starts from tokenx segmentation and applies light ratio tuning:
+## Weighted Strategy (TokenX)
+Weighted starts from tokenx segmentation and applies light ratio tuning:
 - **Base**: tokenx segmentation count
 - **Adjustments**: CJK/punctuation/digit ratios with per-profile tuning
 - **Clamp**: bounded to avoid extreme drift
@@ -86,7 +86,7 @@ Caching is **off by default** and only applies to text >= 512 bytes.
 - **UltraFast** is coarse and may undercount CJK/code
 
 For a structured comparison and evaluation steps, see `ACCURACY.md`.
-To refit Weighted v2 on your own corpus, see `tokenest/tools/fit`.
+To refit Weighted on your own corpus, see `tokenest/tools/fit`.
 
 ## Notes
 - This library is intentionally **zero-dependency**.

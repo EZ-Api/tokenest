@@ -60,7 +60,7 @@ func TestWeightedExplainBreakdown(t *testing.T) {
 	}
 	found := false
 	for _, item := range res.Breakdown {
-		if item.Category == weightedV2CategoryBase {
+		if item.Category == weightedCategoryBase {
 			found = true
 			if item.BaseUnits != 1 {
 				t.Fatalf("expected base units 1, got %v", item.BaseUnits)

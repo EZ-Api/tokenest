@@ -51,7 +51,7 @@ func main() {
 - **raw bytes** → UltraFast
 - **已提取文本** → Fast（除非显式指定 Weighted）
 
-## Weighted v2（基于 TokenX）
+## Weighted（基于 TokenX）
 - **基础**：沿用 tokenx 的分段/分类计数
 - **调整**：按 CJK/标点/数字比例做轻量系数修正
 - **限制**：结果做上下限夹紧，避免极端漂移
@@ -83,7 +83,7 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 - **UltraFast** 最粗糙，可能低估 CJK/代码
 
 更系统的对比方法和评估步骤见 `ACCURACY.md`。
-如需基于自有语料重新拟合 Weighted v2，参考 `tokenest/tools/fit`。
+如需基于自有语料重新拟合 Weighted，参考 `tokenest/tools/fit`。
 
 ## 说明
 - 本库保持 **0 依赖**、轻量可移植。

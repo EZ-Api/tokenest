@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	weightedV2ClampMin        = 0.85
-	weightedV2ClampMax        = 1.20
+	weightedClampMin          = 0.85
+	weightedClampMax          = 1.20
 	tokenXShortTokenThreshold = 3
 )
 
@@ -29,8 +29,8 @@ func tuningForProfile(profile Profile) weightedTuning {
 			cjkRatioFactor:   0.0514,
 			punctRatioFactor: -0.0616,
 			digitRatioFactor: 0.4569,
-			clampMin:         weightedV2ClampMin,
-			clampMax:         weightedV2ClampMax,
+			clampMin:         weightedClampMin,
+			clampMax:         weightedClampMax,
 		}
 	case ProfileGemini:
 		return weightedTuning{
@@ -38,8 +38,8 @@ func tuningForProfile(profile Profile) weightedTuning {
 			cjkRatioFactor:   0.0514,
 			punctRatioFactor: -0.0616,
 			digitRatioFactor: 0.4569,
-			clampMin:         weightedV2ClampMin,
-			clampMax:         weightedV2ClampMax,
+			clampMin:         weightedClampMin,
+			clampMax:         weightedClampMax,
 		}
 	default:
 		return weightedTuning{
@@ -47,26 +47,26 @@ func tuningForProfile(profile Profile) weightedTuning {
 			cjkRatioFactor:   0.0514,
 			punctRatioFactor: -0.0616,
 			digitRatioFactor: 0.4569,
-			clampMin:         weightedV2ClampMin,
-			clampMax:         weightedV2ClampMax,
+			clampMin:         weightedClampMin,
+			clampMax:         weightedClampMax,
 		}
 	}
 }
 
 const (
-	weightedV2CategoryBase       = "base"
-	weightedV2CategoryCJKRatio   = "ratio_cjk"
-	weightedV2CategoryPunctRatio = "ratio_punct"
-	weightedV2CategoryDigitRatio = "ratio_digit"
-	weightedV2CategoryClamp      = "clamp"
+	weightedCategoryBase       = "base"
+	weightedCategoryCJKRatio   = "ratio_cjk"
+	weightedCategoryPunctRatio = "ratio_punct"
+	weightedCategoryDigitRatio = "ratio_digit"
+	weightedCategoryClamp      = "clamp"
 )
 
-var weightedV2BreakdownOrder = []string{
-	weightedV2CategoryBase,
-	weightedV2CategoryCJKRatio,
-	weightedV2CategoryPunctRatio,
-	weightedV2CategoryDigitRatio,
-	weightedV2CategoryClamp,
+var weightedBreakdownOrder = []string{
+	weightedCategoryBase,
+	weightedCategoryCJKRatio,
+	weightedCategoryPunctRatio,
+	weightedCategoryDigitRatio,
+	weightedCategoryClamp,
 }
 
 type tokenXStats struct {
@@ -117,7 +117,7 @@ func estimateWeighted(text string, profile Profile, explain bool, breakdown *[]C
 	}
 
 	if explain && breakdown != nil {
-		items := make([]CategoryBreakdown, 0, len(weightedV2BreakdownOrder))
+		items := make([]CategoryBreakdown, 0, len(weightedBreakdownOrder))
 		appendBreakdownItem := func(category string, units float64, weight float64) {
 			if units == 0 || weight == 0 {
 				return
@@ -130,10 +130,10 @@ func estimateWeighted(text string, profile Profile, explain bool, breakdown *[]C
 			})
 		}
 
-		appendBreakdownItem(weightedV2CategoryBase, base, tuning.baseFactor)
-		appendBreakdownItem(weightedV2CategoryCJKRatio, base*cjkRatio, tuning.cjkRatioFactor)
-		appendBreakdownItem(weightedV2CategoryPunctRatio, base*punctRatio, tuning.punctRatioFactor)
-		appendBreakdownItem(weightedV2CategoryDigitRatio, base*digitRatio, tuning.digitRatioFactor)
+		appendBreakdownItem(weightedCategoryBase, base, tuning.baseFactor)
+		appendBreakdownItem(weightedCategoryCJKRatio, base*cjkRatio, tuning.cjkRatioFactor)
+		appendBreakdownItem(weightedCategoryPunctRatio, base*punctRatio, tuning.punctRatioFactor)
+		appendBreakdownItem(weightedCategoryDigitRatio, base*digitRatio, tuning.digitRatioFactor)
 
 		sum := 0.0
 		for _, item := range items {
@@ -142,7 +142,7 @@ func estimateWeighted(text string, profile Profile, explain bool, breakdown *[]C
 		clampDelta := tokens - sum
 		if clampDelta != 0 {
 			items = append(items, CategoryBreakdown{
-				Category:  weightedV2CategoryClamp,
+				Category:  weightedCategoryClamp,
 				BaseUnits: clampDelta,
 				Weight:    1,
 				Tokens:    clampDelta,
