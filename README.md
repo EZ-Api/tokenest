@@ -1,6 +1,6 @@
 # tokenest
 
-A zero-dependency Go library for estimating token counts for LLM requests.
+A zero-dependency Go library for coarse and fine-grained LLM token estimation.
 
 ## Highlights
 - **Three strategies**: UltraFast, Fast, Weighted
