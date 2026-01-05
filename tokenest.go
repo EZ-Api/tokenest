@@ -153,6 +153,7 @@ func EstimateBytes(data []byte, opts Options) Result {
 	}
 
 	var tokens int
+	var breakdown []CategoryBreakdown
 	switch strategy {
 	case StrategyUltraFast:
 		tokens = estimateUltraFast(data)
@@ -160,7 +161,10 @@ func EstimateBytes(data []byte, opts Options) Result {
 		tokens = estimateFast(string(data))
 	case StrategyWeighted:
 		profile := resolveProfile(opts)
-		tokens = estimateWeighted(string(data), profile, opts.Explain, nil)
+		if opts.Explain {
+			breakdown = make([]CategoryBreakdown, 0)
+		}
+		tokens = estimateWeighted(string(data), profile, opts.Explain, &breakdown)
 	default:
 		tokens = estimateUltraFast(data)
 	}
@@ -168,9 +172,10 @@ func EstimateBytes(data []byte, opts Options) Result {
 	tokens = applyMultiplier(tokens, opts.GlobalMultiplier)
 
 	return Result{
-		Tokens:   tokens,
-		Strategy: strategy,
-		Profile:  resolveProfile(opts),
+		Tokens:    tokens,
+		Strategy:  strategy,
+		Profile:   resolveProfile(opts),
+		Breakdown: breakdown,
 	}
 }
 
@@ -212,6 +217,8 @@ func EstimateText(text string, opts Options) Result {
 
 // EstimateInput estimates input tokens including text, images, and message overhead.
 func EstimateInput(text string, images ImageCounts, messageCount int, opts Options) Result {
+	multiplier := opts.GlobalMultiplier
+	opts.GlobalMultiplier = 1.0
 	result := EstimateText(text, opts)
 
 	imageTokens := images.LowDetail*ImageTokensLow +
@@ -221,6 +228,7 @@ func EstimateInput(text string, images ImageCounts, messageCount int, opts Optio
 	overhead := BaseOverhead + messageCount*PerMessageOverhead
 
 	result.Tokens += imageTokens + overhead
+	result.Tokens = applyMultiplier(result.Tokens, multiplier)
 
 	return result
 }
