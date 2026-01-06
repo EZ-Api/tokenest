@@ -30,7 +30,7 @@ GOWORK=off go run .
 - 打印拟合系数与各样本误差。
 
 ## adversary
-生成对抗样本，寻找最坏低估情况，评估鲁棒性。
+生成对抗样本，寻找最坏低估/高估情况，评估鲁棒性。
 
 运行：
 ```bash
@@ -42,6 +42,7 @@ GOWORK=off go run . -samples 2000 -length 50000 -top 5 -workers 4
 - `-save-top`：保存 TokenX 和 Weighted 最坏的前 N 个样本（默认 5，设为 0 关闭）。
 - `-save-dir`：保存目录（默认 `tokenest/datasets/test`）。
 - `-workers`：并发数（自动限制到 8，避免打满主机）。
+- `-report-dir`：报告输出目录（默认 `tokenest/report`，用 `-` 关闭）。
 
 ## 报告
 accuracy 报告会写入 `tokenest/report/`，文件名包含时间戳。

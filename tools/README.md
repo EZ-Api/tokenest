@@ -30,7 +30,7 @@ Output:
 - Prints coefficients and per-sample errors.
 
 ## adversary
-Stress-tests worst-case underestimation by generating adversarial text and comparing against `tiktoken`.
+Stress-tests worst-case under/overestimation by generating adversarial text and comparing against `tiktoken`.
 
 Run:
 ```bash
@@ -42,6 +42,7 @@ Options:
 - `-save-top`: save top N worst cases for TokenX and Weighted (default: 5, set `0` to disable).
 - `-save-dir`: output directory for saved samples (default: `tokenest/datasets/test`).
 - `-workers`: max concurrency (auto-capped at 8 to avoid host saturation).
+- `-report-dir`: output report directory (default: `tokenest/report`, use `-` to disable).
 
 ## Reports
 Accuracy reports are written to `tokenest/report/` with timestamps in the filename.

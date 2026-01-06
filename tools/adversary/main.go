@@ -111,6 +111,16 @@ type scored struct {
 	Sample string
 }
 
+type reportParams struct {
+	Length  int
+	Samples int
+	Top     int
+	Workers int
+	Seed    int64
+	SaveTop int
+	SaveDir string
+}
+
 func main() {
 	var (
 		length  = flag.Int("length", 50000, "target length for generated strings")
@@ -120,6 +130,7 @@ func main() {
 		workers = flag.Int("workers", 0, "max concurrent workers (default: auto)")
 		saveDir = flag.String("save-dir", "", "directory to save worst-case samples (default: <repo>/tokenest/datasets/test)")
 		saveTop = flag.Int("save-top", 5, "save top N samples for TokenX and Weighted (0 disables)")
+		report  = flag.String("report-dir", "", "write markdown report to this directory (default: <repo>/tokenest/report, use '-' to disable)")
 	)
 	flag.Parse()
 
@@ -129,6 +140,13 @@ func main() {
 	resolvedSaveDir := *saveDir
 	if *saveTop > 0 && resolvedSaveDir == "" {
 		resolvedSaveDir = filepath.Join(repoRoot, "tokenest", "datasets", "test")
+	}
+	resolvedReportDir := *report
+	if resolvedReportDir == "" {
+		resolvedReportDir = filepath.Join(repoRoot, "tokenest", "report")
+	}
+	if resolvedReportDir == "-" {
+		resolvedReportDir = ""
 	}
 
 	kinds := []string{
@@ -166,8 +184,10 @@ func main() {
 		textByName[c.Name] = c.Text
 	}
 
-	var tokenxScores []scored
-	var weightedScores []scored
+	var tokenxUnder []scored
+	var tokenxOver []scored
+	var weightedUnder []scored
+	var weightedOver []scored
 
 	jobs := make(chan candidate)
 	results := make(chan scorePair, workerCount)
@@ -184,15 +204,23 @@ func main() {
 				weightedEst := estimateWeighted(c.Text)
 
 				var res scorePair
-				if actual > tokenxEst {
-					res.tokenx = buildScore(c, actual, tokenxEst)
-					res.tokenxOk = true
+				switch {
+				case actual > tokenxEst:
+					res.tokenxUnder = buildUnderScore(c, actual, tokenxEst)
+					res.tokenxUnderOk = true
+				case actual < tokenxEst:
+					res.tokenxOver = buildOverScore(c, actual, tokenxEst)
+					res.tokenxOverOk = true
 				}
-				if actual > weightedEst {
-					res.weighted = buildScore(c, actual, weightedEst)
-					res.weightedOk = true
+				switch {
+				case actual > weightedEst:
+					res.weightedUnder = buildUnderScore(c, actual, weightedEst)
+					res.weightedUnderOk = true
+				case actual < weightedEst:
+					res.weightedOver = buildOverScore(c, actual, weightedEst)
+					res.weightedOverOk = true
 				}
-				if res.tokenxOk || res.weightedOk {
+				if res.tokenxUnderOk || res.tokenxOverOk || res.weightedUnderOk || res.weightedOverOk {
 					results <- res
 				}
 			}
@@ -212,44 +240,97 @@ func main() {
 	}()
 
 	for res := range results {
-		if res.tokenxOk {
-			tokenxScores = append(tokenxScores, res.tokenx)
+		if res.tokenxUnderOk {
+			tokenxUnder = append(tokenxUnder, res.tokenxUnder)
 		}
-		if res.weightedOk {
-			weightedScores = append(weightedScores, res.weighted)
+		if res.tokenxOverOk {
+			tokenxOver = append(tokenxOver, res.tokenxOver)
+		}
+		if res.weightedUnderOk {
+			weightedUnder = append(weightedUnder, res.weightedUnder)
+		}
+		if res.weightedOverOk {
+			weightedOver = append(weightedOver, res.weightedOver)
 		}
 	}
 
-	sort.Slice(tokenxScores, func(i, j int) bool { return tokenxScores[i].Ratio > tokenxScores[j].Ratio })
-	sort.Slice(weightedScores, func(i, j int) bool { return weightedScores[i].Ratio > weightedScores[j].Ratio })
+	sort.Slice(tokenxUnder, func(i, j int) bool { return tokenxUnder[i].Ratio > tokenxUnder[j].Ratio })
+	sort.Slice(tokenxOver, func(i, j int) bool { return tokenxOver[i].Ratio > tokenxOver[j].Ratio })
+	sort.Slice(weightedUnder, func(i, j int) bool { return weightedUnder[i].Ratio > weightedUnder[j].Ratio })
+	sort.Slice(weightedOver, func(i, j int) bool { return weightedOver[i].Ratio > weightedOver[j].Ratio })
 
-	fmt.Printf("TokenX worst underestimation (top %d)\n", min(*top, len(tokenxScores)))
-	printScores(tokenxScores, *top)
+	fmt.Printf("TokenX worst underestimation (top %d)\n", min(*top, len(tokenxUnder)))
+	printScores(tokenxUnder, *top)
 
-	fmt.Printf("\nWeighted worst underestimation (top %d)\n", min(*top, len(weightedScores)))
-	printScores(weightedScores, *top)
+	fmt.Printf("\nTokenX worst overestimation (top %d)\n", min(*top, len(tokenxOver)))
+	printScores(tokenxOver, *top)
+
+	fmt.Printf("\nWeighted worst underestimation (top %d)\n", min(*top, len(weightedUnder)))
+	printScores(weightedUnder, *top)
+
+	fmt.Printf("\nWeighted worst overestimation (top %d)\n", min(*top, len(weightedOver)))
+	printScores(weightedOver, *top)
 
 	fmt.Println()
-	fmt.Printf("Weighted max underestimation ratio: %.2f%%\n", maxRatio(weightedScores)*100)
+	fmt.Printf("TokenX max underestimation ratio: %.2f%%\n", maxRatio(tokenxUnder)*100)
+	fmt.Printf("TokenX max overestimation ratio: %.2f%%\n", maxRatio(tokenxOver)*100)
+	fmt.Printf("Weighted max underestimation ratio: %.2f%%\n", maxRatio(weightedUnder)*100)
+	fmt.Printf("Weighted max overestimation ratio: %.2f%%\n", maxRatio(weightedOver)*100)
 
 	if resolvedSaveDir != "" && *saveTop > 0 {
-		if err := saveWorstCases(resolvedSaveDir, *saveTop, tokenxScores, weightedScores, textByName); err != nil {
+		if err := saveWorstCases(resolvedSaveDir, *saveTop, tokenxUnder, weightedUnder, textByName); err != nil {
 			fmt.Fprintf(os.Stderr, "save error: %v\n", err)
 		} else {
-			fmt.Printf("Saved top %d worst cases to %s\n", *saveTop, resolvedSaveDir)
+			fmt.Printf("Saved top %d worst underestimation cases to %s\n", *saveTop, resolvedSaveDir)
+		}
+	}
+
+	if resolvedReportDir != "" {
+		params := reportParams{
+			Length:  *length,
+			Samples: *samples,
+			Top:     *top,
+			Workers: workerCount,
+			Seed:    *seed,
+			SaveTop: *saveTop,
+			SaveDir: resolvedSaveDir,
+		}
+		if err := writeReport(resolvedReportDir, params, tokenxUnder, tokenxOver, weightedUnder, weightedOver); err != nil {
+			fmt.Fprintf(os.Stderr, "report error: %v\n", err)
+		} else {
+			fmt.Printf("Report written to %s\n", resolvedReportDir)
 		}
 	}
 }
 
 type scorePair struct {
-	tokenx     scored
-	tokenxOk   bool
-	weighted   scored
-	weightedOk bool
+	tokenxUnder     scored
+	tokenxUnderOk   bool
+	tokenxOver      scored
+	tokenxOverOk    bool
+	weightedUnder   scored
+	weightedUnderOk bool
+	weightedOver    scored
+	weightedOverOk  bool
 }
 
-func buildScore(c candidate, actual, est int) scored {
+func buildUnderScore(c candidate, actual, est int) scored {
 	diff := actual - est
+	ratio := float64(diff) / float64(actual)
+	return scored{
+		Name:   c.Name,
+		Kind:   c.Kind,
+		Length: len(c.Text),
+		Actual: actual,
+		Est:    est,
+		Diff:   diff,
+		Ratio:  ratio,
+		Sample: preview(c.Text, 96),
+	}
+}
+
+func buildOverScore(c candidate, actual, est int) scored {
+	diff := est - actual
 	ratio := float64(diff) / float64(actual)
 	return scored{
 		Name:   c.Name,
@@ -371,6 +452,87 @@ func sanitizeName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+func writeReport(dir string, params reportParams, tokenxUnder, tokenxOver, weightedUnder, weightedOver []scored) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	fileName := fmt.Sprintf("adversary-%s.md", now.Format("20060102-150405Z"))
+	path := filepath.Join(dir, fileName)
+
+	var b strings.Builder
+	b.WriteString("# adversary report\n\n")
+	b.WriteString("Generated by `tokenest/tools/adversary`.\n")
+	b.WriteString("Generated at: ")
+	b.WriteString(now.Format(time.RFC3339))
+	b.WriteString("\n\n")
+
+	b.WriteString("## Parameters\n")
+	b.WriteString(fmt.Sprintf("- length: %d\n", params.Length))
+	b.WriteString(fmt.Sprintf("- samples: %d\n", params.Samples))
+	b.WriteString(fmt.Sprintf("- top: %d\n", params.Top))
+	b.WriteString(fmt.Sprintf("- workers: %d\n", params.Workers))
+	b.WriteString(fmt.Sprintf("- seed: %d\n", params.Seed))
+	b.WriteString(fmt.Sprintf("- save-top: %d\n", params.SaveTop))
+	if params.SaveDir != "" {
+		b.WriteString(fmt.Sprintf("- save-dir: %s\n", params.SaveDir))
+	}
+	b.WriteString("\n")
+
+	b.WriteString("## Summary\n")
+	b.WriteString(fmt.Sprintf("- TokenX max underestimation ratio: %.2f%%\n", maxRatio(tokenxUnder)*100))
+	b.WriteString(fmt.Sprintf("- TokenX max overestimation ratio: %.2f%%\n", maxRatio(tokenxOver)*100))
+	b.WriteString(fmt.Sprintf("- Weighted max underestimation ratio: %.2f%%\n", maxRatio(weightedUnder)*100))
+	b.WriteString(fmt.Sprintf("- Weighted max overestimation ratio: %.2f%%\n", maxRatio(weightedOver)*100))
+	b.WriteString("\n")
+
+	b.WriteString("## TokenX worst underestimation\n")
+	writeScoreTable(&b, params.Top, tokenxUnder)
+	b.WriteString("\n")
+
+	b.WriteString("## TokenX worst overestimation\n")
+	writeScoreTable(&b, params.Top, tokenxOver)
+	b.WriteString("\n")
+
+	b.WriteString("## Weighted worst underestimation\n")
+	writeScoreTable(&b, params.Top, weightedUnder)
+	b.WriteString("\n")
+
+	b.WriteString("## Weighted worst overestimation\n")
+	writeScoreTable(&b, params.Top, weightedOver)
+
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func writeScoreTable(b *strings.Builder, top int, scores []scored) {
+	b.WriteString("| Rank | Name | Kind | Actual | Estimated | Diff | Ratio | Sample |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	limit := min(top, len(scores))
+	for i := 0; i < limit; i++ {
+		s := scores[i]
+		b.WriteString(fmt.Sprintf("| %d | %s | %s | %d | %d | %d | %.2f%% | %s |\n",
+			i+1,
+			escapeCell(s.Name),
+			escapeCell(s.Kind),
+			s.Actual,
+			s.Est,
+			s.Diff,
+			s.Ratio*100,
+			escapeCell(s.Sample),
+		))
+	}
+	if limit == 0 {
+		b.WriteString("| - | - | - | - | - | - | - | - |\n")
+	}
+}
+
+func escapeCell(value string) string {
+	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return value
 }
 
 func estimateWeighted(text string) int {
