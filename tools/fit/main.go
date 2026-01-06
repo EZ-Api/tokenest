@@ -7,17 +7,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/EZ-Api/tokenest"
 	"github.com/pkoukk/tiktoken-go"
-)
-
-const (
-	tokenXDefaultCharsPerToken = 6.0
-	tokenXShortTokenThreshold  = 3
 )
 
 type sample struct {
@@ -47,11 +41,15 @@ type featureRow struct {
 	feat   []float64
 }
 
+type searchConfig struct {
+	charsPerToken  float64
+	shortThreshold int
+}
+
 func main() {
 	enc := mustEncoding()
 	repoRoot := findRepoRoot()
-	tokenxFixtureDir := filepath.Join(repoRoot, "tokenx", "test", "fixtures", "ebooks")
-	tokenxTypescript := filepath.Join(repoRoot, "tokenx", "node_modules", "typescript", "lib", "lib.es5.d.ts")
+	datasetsDir := filepath.Join(repoRoot, "tokenest", "datasets", "test")
 
 	samples := []sample{
 		{
@@ -63,23 +61,37 @@ func main() {
 			inline: "Die p\u00fcnktlich gew\u00fcnschte Tr\u00fcffelf\u00fcllung im \u00fcbergest\u00fclpten W\u00fcrzk\u00fcmmel-W\u00fcrfel ist k\u00fcmmerlich und d\u00fcrfte f\u00fcrderhin zu R\u00fcffeln in H\u00fclle und F\u00fclle f\u00fchren",
 		},
 		{
-			name: "Metamorphosis by Franz Kafka (English)",
-			path: filepath.Join(tokenxFixtureDir, "pg5200.txt"),
+			name: "Bible KJV (English)",
+			path: filepath.Join(datasetsDir, "bible_kjv_en.txt"),
 		},
 		{
-			name: "Die Verwandlung by Franz Kafka (German)",
-			path: filepath.Join(tokenxFixtureDir, "pg22367.txt"),
+			name: "Capital (English)",
+			path: filepath.Join(datasetsDir, "capital_en.txt"),
 		},
 		{
-			name: "\u9053\u5fb7\u7d93 by Laozi (Chinese)",
-			path: filepath.Join(tokenxFixtureDir, "pg7337.txt"),
+			name: "Candide (French)",
+			path: filepath.Join(datasetsDir, "candide_fr.txt"),
 		},
 		{
-			name:      "TypeScript ES5 Type Declarations (~ 4000 loc)",
-			path:      tokenxTypescript,
-			url:       "https://unpkg.com/typescript@5.9.3/lib/lib.es5.d.ts",
-			cacheFile: "lib.es5.d.ts",
+			name: "Faust (German)",
+			path: filepath.Join(datasetsDir, "faust_de.txt"),
 		},
+		{
+			name: "Analects (Chinese)",
+			path: filepath.Join(datasetsDir, "analects_zh.txt"),
+		},
+		{
+			name: "Go HTTP Server (Code)",
+			path: filepath.Join(datasetsDir, "golang_net_http_server.go"),
+		},
+		{name: "Mixed3 01", path: filepath.Join(datasetsDir, "mixed3_01_zh_en_code.txt")},
+		{name: "Mixed3 02", path: filepath.Join(datasetsDir, "mixed3_02_zh_en_code.txt")},
+		{name: "Mixed3 03", path: filepath.Join(datasetsDir, "mixed3_03_zh_en_code.txt")},
+		{name: "Mixed5 01", path: filepath.Join(datasetsDir, "mixed5_01_zh_en_de_fr_code.txt")},
+		{name: "Mixed5 02", path: filepath.Join(datasetsDir, "mixed5_02_zh_en_de_fr_code.txt")},
+		{name: "Mixed5 03", path: filepath.Join(datasetsDir, "mixed5_03_zh_en_de_fr_code.txt")},
+		{name: "Mixed5 04", path: filepath.Join(datasetsDir, "mixed5_04_zh_en_de_fr_code.txt")},
+		{name: "Mixed5 05", path: filepath.Join(datasetsDir, "mixed5_05_zh_en_de_fr_code.txt")},
 	}
 
 	loaded := make([]sampleData, 0, len(samples))
@@ -92,44 +104,152 @@ func main() {
 		loaded = append(loaded, sampleData{sample: s, text: text})
 	}
 
-	if mixed, ok := buildMixedSample(loaded); ok {
-		loaded = append(loaded, mixed)
-	}
+	// Prepare data splits
+	var trainItems []sampleData
+	var testItems []sampleData
 
-	rows := make([]featureRow, 0, len(loaded))
+	// We split each sample text into train/test parts to ensure coverage
 	for _, item := range loaded {
-		text := item.text
-		actual := float64(len(enc.Encode(text, nil, nil)))
-		baseTokens, stats := estimateTokenXWithStats(text)
-		features := buildFeatures(baseTokens, stats)
-		rows = append(rows, featureRow{
-			name:   item.sample.name,
-			actual: actual,
-			base:   float64(baseTokens),
-			feat:   features,
+		runes := []rune(item.text)
+		if len(runes) == 0 {
+			continue
+		}
+
+		splitIdx := int(float64(len(runes)) * 0.8)
+		if splitIdx == 0 && len(runes) > 0 {
+			splitIdx = len(runes)
+		}
+
+		trainText := string(runes[:splitIdx])
+		testText := string(runes[splitIdx:])
+
+		if len(trainText) > 0 {
+			trainItems = append(trainItems, sampleData{sample: item.sample, text: trainText})
+		}
+		if len(testText) > 0 {
+			testItems = append(testItems, sampleData{sample: item.sample, text: testText})
+		}
+	}
+
+	// Grid Search
+	var bestConfig searchConfig
+	var bestCoeffs []float64
+	bestTrainMAPE := math.MaxFloat64
+
+	fmt.Println("Starting grid search for hyperparameters...")
+
+	for chars := 3.0; chars <= 8.0; chars += 0.5 {
+		for threshold := 1; threshold <= 6; threshold++ {
+			cfg := searchConfig{
+				charsPerToken:  chars,
+				shortThreshold: threshold,
+			}
+
+			// Build train features
+			trainRows := make([]featureRow, 0, len(trainItems))
+			for _, item := range trainItems {
+				trainRows = append(trainRows, makeFeatureRow(item.sample.name, item.text, enc, cfg))
+			}
+
+			// Fit
+			x := make([][]float64, 0, len(trainRows))
+			y := make([]float64, 0, len(trainRows))
+			for _, row := range trainRows {
+				x = append(x, row.feat)
+				y = append(y, row.actual)
+			}
+
+			coeffs, err := solveLeastSquares(x, y)
+			if err != nil {
+				continue
+			}
+
+			// Evaluate on Train
+			mape := calculateMAPE(trainRows, coeffs)
+			if mape < bestTrainMAPE {
+				bestTrainMAPE = mape
+				bestConfig = cfg
+				bestCoeffs = coeffs
+			}
+		}
+	}
+
+	fmt.Printf("\n=== BEST CONFIGURATION FOUND ===\n")
+	fmt.Printf("Train MAPE: %.4f%%\n", bestTrainMAPE)
+	fmt.Printf("CharsPerToken: %.1f\n", bestConfig.charsPerToken)
+	fmt.Printf("ShortThreshold: %d\n", bestConfig.shortThreshold)
+
+	fmt.Println("\nWeighted fit coefficients (o200k_base):")
+	fmt.Printf("baseFactor=%.4f\n", bestCoeffs[0])
+	fmt.Printf("cjkRatioFactor=%.4f\n", bestCoeffs[1])
+	fmt.Printf("punctRatioFactor=%.4f\n", bestCoeffs[2])
+	fmt.Printf("digitRatioFactor=%.4f\n", bestCoeffs[3])
+
+	// Re-evaluate on Train with best config
+	fmt.Println("\n=== TRAIN SET EVALUATION (Best Config) ===")
+	finalTrainRows := make([]featureRow, 0, len(trainItems))
+	for _, item := range trainItems {
+		finalTrainRows = append(finalTrainRows, makeFeatureRow(item.sample.name, item.text, enc, bestConfig))
+	}
+	evaluate(finalTrainRows, bestCoeffs)
+
+	// Re-evaluate on Test with best config
+	fmt.Println("\n=== TEST SET EVALUATION (Best Config) ===")
+	finalTestRows := make([]featureRow, 0, len(testItems))
+	for _, item := range testItems {
+		finalTestRows = append(finalTestRows, makeFeatureRow(item.sample.name, item.text, enc, bestConfig))
+	}
+	evaluate(finalTestRows, bestCoeffs)
+
+	fmt.Println("\nSuggested tuning snippet:")
+	fmt.Printf("// Update tokenest/weighted.go constants:\n")
+	fmt.Printf("tokenXDefaultCharsPerToken = %.1f\n", bestConfig.charsPerToken)
+	fmt.Printf("tokenXShortTokenThreshold  = %d\n", bestConfig.shortThreshold)
+	fmt.Printf("\n// Update tuning coefficients:\n")
+	fmt.Printf("baseFactor: %.4f,\n", bestCoeffs[0])
+	fmt.Printf("cjkRatioFactor: %.4f,\n", bestCoeffs[1])
+	fmt.Printf("punctRatioFactor: %.4f,\n", bestCoeffs[2])
+	fmt.Printf("digitRatioFactor: %.4f,\n", bestCoeffs[3])
+
+	fmt.Println("\nCurrent Weighted estimate (library, untuned) per sample (Full Text):")
+	for _, item := range loaded {
+		res := tokenest.EstimateText(item.text, tokenest.Options{
+			Strategy: tokenest.StrategyWeighted,
+			Profile:  tokenest.ProfileOpenAI,
 		})
+		fmt.Printf("%s\tactual=%d\tweighted=%d\n", item.sample.name, len(enc.Encode(item.text, nil, nil)), res.Tokens)
 	}
+}
 
-	x := make([][]float64, 0, len(rows))
-	y := make([]float64, 0, len(rows))
+func calculateMAPE(rows []featureRow, coeffs []float64) float64 {
+	var totalAbsPct float64
+	count := 0
 	for _, row := range rows {
-		x = append(x, row.feat)
-		y = append(y, row.actual)
+		pred := predict(coeffs, row.feat)
+		if row.actual > 0 {
+			totalAbsPct += math.Abs(pred-row.actual) / row.actual * 100
+			count++
+		}
 	}
-
-	coeffs, err := solveLeastSquares(x, y)
-	if err != nil {
-		fmt.Printf("fit failed: %v\n", err)
-		return
+	if count == 0 {
+		return 0
 	}
+	return totalAbsPct / float64(count)
+}
 
-	fmt.Println("Weighted fit coefficients (o200k_base, tokenx fixtures)")
-	fmt.Printf("baseFactor=%.4f\n", coeffs[0])
-	fmt.Printf("cjkRatioFactor=%.4f\n", coeffs[1])
-	fmt.Printf("punctRatioFactor=%.4f\n", coeffs[2])
-	fmt.Printf("digitRatioFactor=%.4f\n", coeffs[3])
+func makeFeatureRow(name string, text string, enc *tiktoken.Tiktoken, cfg searchConfig) featureRow {
+	actual := float64(len(enc.Encode(text, nil, nil)))
+	baseTokens, stats := estimateTokenXWithStats(text, cfg)
+	features := buildFeatures(baseTokens, stats)
+	return featureRow{
+		name:   name,
+		actual: actual,
+		base:   float64(baseTokens),
+		feat:   features,
+	}
+}
 
-	fmt.Println("\nPer-sample predictions")
+func evaluate(rows []featureRow, coeffs []float64) {
 	var totalAbsPct float64
 	for _, row := range rows {
 		pred := predict(coeffs, row.feat)
@@ -141,22 +261,7 @@ func main() {
 		fmt.Printf("%s\tactual=%.0f\tpred=%.0f\tape=%.2f%%\n", row.name, row.actual, pred, pct)
 	}
 	if len(rows) > 0 {
-		fmt.Printf("\nMAPE: %.2f%%\n", totalAbsPct/float64(len(rows)))
-	}
-
-	fmt.Println("\nSuggested tuning snippet:")
-	fmt.Printf("baseFactor: %.4f\n", coeffs[0])
-	fmt.Printf("cjkRatioFactor: %.4f\n", coeffs[1])
-	fmt.Printf("punctRatioFactor: %.4f\n", coeffs[2])
-	fmt.Printf("digitRatioFactor: %.4f\n", coeffs[3])
-
-	fmt.Println("\nCurrent Weighted estimate (library) per sample:")
-	for _, item := range loaded {
-		res := tokenest.EstimateText(item.text, tokenest.Options{
-			Strategy: tokenest.StrategyWeighted,
-			Profile:  tokenest.ProfileOpenAI,
-		})
-		fmt.Printf("%s\tactual=%d\tweighted=%d\n", item.sample.name, len(enc.Encode(item.text, nil, nil)), res.Tokens)
+		fmt.Printf("MAPE: %.2f%%\n", totalAbsPct/float64(len(rows)))
 	}
 }
 
@@ -174,66 +279,6 @@ func findRepoRoot() string {
 		return "."
 	}
 	return filepath.Clean(filepath.Join(wd, "..", "..", ".."))
-}
-
-func buildMixedSample(samples []sampleData) (sampleData, bool) {
-	english, ok := findSampleText(samples, "Metamorphosis by Franz Kafka (English)")
-	if !ok {
-		return sampleData{}, false
-	}
-	cjk, ok := findSampleText(samples, "\u9053\u5fb7\u7d93 by Laozi (Chinese)")
-	if !ok {
-		return sampleData{}, false
-	}
-	code, ok := findSampleText(samples, "TypeScript ES5 Type Declarations (~ 4000 loc)")
-	if !ok {
-		return sampleData{}, false
-	}
-
-	mixed := strings.Join([]string{
-		takeRunes(english, 0.33),
-		takeRunes(cjk, 0.33),
-		takeRunes(code, 0.33),
-	}, "\n\n")
-
-	return sampleData{
-		sample: sample{name: "Mixed (EN+CJK+Code)"},
-		text:   mixed,
-	}, true
-}
-
-func findSampleText(samples []sampleData, name string) (string, bool) {
-	for _, item := range samples {
-		if item.sample.name == name {
-			return item.text, true
-		}
-	}
-	return "", false
-}
-
-func takeRunes(text string, fraction float64) string {
-	if text == "" || fraction <= 0 {
-		return ""
-	}
-	runeCount := utf8.RuneCountInString(text)
-	if runeCount == 0 {
-		return ""
-	}
-	target := int(math.Ceil(float64(runeCount) * fraction))
-	if target <= 0 {
-		return ""
-	}
-	if target >= runeCount {
-		return text
-	}
-	count := 0
-	for idx := range text {
-		if count == target {
-			return text[:idx]
-		}
-		count++
-	}
-	return text
 }
 
 func loadSample(s sample) string {
@@ -382,7 +427,7 @@ func solveLinearSystem(a [][]float64, b []float64) ([]float64, error) {
 	return b, nil
 }
 
-func estimateTokenXWithStats(text string) (int, tokenXStats) {
+func estimateTokenXWithStats(text string, cfg searchConfig) (int, tokenXStats) {
 	stats := tokenXStats{}
 	if text == "" {
 		return 0, stats
@@ -402,14 +447,14 @@ func estimateTokenXWithStats(text string) (int, tokenXStats) {
 		}
 
 		if currentType != segmentType {
-			baseTokens += estimateTokenXSegment(text[segmentStart:idx], &stats)
+			baseTokens += estimateTokenXSegment(text[segmentStart:idx], &stats, cfg)
 			segmentStart = idx
 			segmentType = currentType
 		}
 	}
 
 	if segmentStart < len(text) {
-		baseTokens += estimateTokenXSegment(text[segmentStart:], &stats)
+		baseTokens += estimateTokenXSegment(text[segmentStart:], &stats, cfg)
 	}
 
 	return baseTokens, stats
@@ -434,7 +479,7 @@ func tokenXSegmentTypeForRune(r rune) tokenXSegmentType {
 	return tokenXSegmentTypeOther
 }
 
-func estimateTokenXSegment(segment string, stats *tokenXStats) int {
+func estimateTokenXSegment(segment string, stats *tokenXStats, cfg searchConfig) int {
 	if segment == "" {
 		return 0
 	}
@@ -466,7 +511,7 @@ func estimateTokenXSegment(segment string, stats *tokenXStats) int {
 		return 1
 	}
 
-	if runeCount <= tokenXShortTokenThreshold {
+	if runeCount <= cfg.shortThreshold {
 		return 1
 	}
 
@@ -480,7 +525,7 @@ func estimateTokenXSegment(segment string, stats *tokenXStats) int {
 	if isAlphanumericSegment(segment) {
 		avg := getLanguageSpecificCharsPerToken(segment)
 		if avg <= 0 {
-			avg = tokenXDefaultCharsPerToken
+			avg = cfg.charsPerToken
 		}
 		return int(math.Ceil(float64(runeCount) / avg))
 	}
