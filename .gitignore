@@ -26,7 +26,8 @@ go.work.sum
 
 # env file
 .env
-
+openspec/
+AGENTS.md
 # Editor/IDE
 # .idea/
 # .vscode/
