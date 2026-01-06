@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -93,6 +95,7 @@ var tokenXLanguageConfigs = []tokenXLanguageConfig{
 }
 
 type candidate struct {
+	Kind string
 	Name string
 	Text string
 }
@@ -115,11 +118,18 @@ func main() {
 		top     = flag.Int("top", 8, "top N underestimation cases to report")
 		seed    = flag.Int64("seed", time.Now().UnixNano(), "random seed")
 		workers = flag.Int("workers", 0, "max concurrent workers (default: auto)")
+		saveDir = flag.String("save-dir", "", "directory to save worst-case samples (default: <repo>/tokenest/datasets/test)")
+		saveTop = flag.Int("save-top", 5, "save top N samples for TokenX and Weighted (0 disables)")
 	)
 	flag.Parse()
 
 	rng := rand.New(rand.NewSource(*seed))
 	workerCount := resolveWorkers(*workers)
+	repoRoot := findRepoRoot()
+	resolvedSaveDir := *saveDir
+	if *saveTop > 0 && resolvedSaveDir == "" {
+		resolvedSaveDir = filepath.Join(repoRoot, "tokenest", "datasets", "test")
+	}
 
 	kinds := []string{
 		"minified_json",
@@ -136,6 +146,7 @@ func main() {
 	candidates := make([]candidate, 0, *samples+len(kinds))
 	for _, kind := range kinds {
 		candidates = append(candidates, candidate{
+			Kind: kind,
 			Name: kind + "_seed",
 			Text: generate(kind, *length, rng),
 		})
@@ -144,9 +155,15 @@ func main() {
 	for i := 0; i < *samples; i++ {
 		kind := kinds[rng.Intn(len(kinds))]
 		candidates = append(candidates, candidate{
+			Kind: kind,
 			Name: fmt.Sprintf("%s_%03d", kind, i+1),
 			Text: generate(kind, *length, rng),
 		})
+	}
+
+	textByName := make(map[string]string, len(candidates))
+	for _, c := range candidates {
+		textByName[c.Name] = c.Text
 	}
 
 	var tokenxScores []scored
@@ -214,6 +231,14 @@ func main() {
 
 	fmt.Println()
 	fmt.Printf("Weighted max underestimation ratio: %.2f%%\n", maxRatio(weightedScores)*100)
+
+	if resolvedSaveDir != "" && *saveTop > 0 {
+		if err := saveWorstCases(resolvedSaveDir, *saveTop, tokenxScores, weightedScores, textByName); err != nil {
+			fmt.Fprintf(os.Stderr, "save error: %v\n", err)
+		} else {
+			fmt.Printf("Saved top %d worst cases to %s\n", *saveTop, resolvedSaveDir)
+		}
+	}
 }
 
 type scorePair struct {
@@ -228,7 +253,7 @@ func buildScore(c candidate, actual, est int) scored {
 	ratio := float64(diff) / float64(actual)
 	return scored{
 		Name:   c.Name,
-		Kind:   detectKind(c.Name),
+		Kind:   c.Kind,
 		Length: len(c.Text),
 		Actual: actual,
 		Est:    est,
@@ -236,14 +261,6 @@ func buildScore(c candidate, actual, est int) scored {
 		Ratio:  ratio,
 		Sample: preview(c.Text, 96),
 	}
-}
-
-func detectKind(name string) string {
-	parts := strings.Split(name, "_")
-	if len(parts) == 0 {
-		return name
-	}
-	return parts[0]
 }
 
 func preview(text string, max int) string {
@@ -295,6 +312,65 @@ func resolveWorkers(requested int) int {
 		return maxWorkers
 	}
 	return requested
+}
+
+func findRepoRoot() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return filepath.Clean(filepath.Join(wd, "..", "..", ".."))
+}
+
+func saveWorstCases(dir string, top int, tokenxScores, weightedScores []scored, textByName map[string]string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := saveScoreList(dir, "adversary_tokenx", top, tokenxScores, textByName); err != nil {
+		return err
+	}
+	if err := saveScoreList(dir, "adversary_weighted", top, weightedScores, textByName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func saveScoreList(dir, prefix string, top int, scores []scored, textByName map[string]string) error {
+	limit := min(top, len(scores))
+	for i := 0; i < limit; i++ {
+		score := scores[i]
+		content := textByName[score.Name]
+		if content == "" {
+			continue
+		}
+		kind := sanitizeName(score.Kind)
+		name := fmt.Sprintf("%s_%02d_%s.txt", prefix, i+1, kind)
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sanitizeName(name string) string {
+	if name == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func estimateWeighted(text string) int {
