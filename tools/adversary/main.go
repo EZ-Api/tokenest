@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -112,11 +114,12 @@ func main() {
 		samples = flag.Int("samples", 200, "number of random candidates")
 		top     = flag.Int("top", 8, "top N underestimation cases to report")
 		seed    = flag.Int64("seed", time.Now().UnixNano(), "random seed")
+		workers = flag.Int("workers", 0, "max concurrent workers (default: auto)")
 	)
 	flag.Parse()
 
 	rng := rand.New(rand.NewSource(*seed))
-	enc := mustEncoding()
+	workerCount := resolveWorkers(*workers)
 
 	kinds := []string{
 		"minified_json",
@@ -149,16 +152,54 @@ func main() {
 	var tokenxScores []scored
 	var weightedScores []scored
 
-	for _, c := range candidates {
-		actual := len(enc.Encode(c.Text, nil, nil))
-		tokenxEst := estimateTokenX(c.Text)
-		weightedEst := estimateWeighted(c.Text)
+	jobs := make(chan candidate)
+	results := make(chan scorePair, workerCount)
 
-		if actual > tokenxEst {
-			tokenxScores = append(tokenxScores, buildScore(c, actual, tokenxEst))
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			enc := mustEncoding()
+			for c := range jobs {
+				actual := len(enc.Encode(c.Text, nil, nil))
+				tokenxEst := estimateTokenX(c.Text)
+				weightedEst := estimateWeighted(c.Text)
+
+				var res scorePair
+				if actual > tokenxEst {
+					res.tokenx = buildScore(c, actual, tokenxEst)
+					res.tokenxOk = true
+				}
+				if actual > weightedEst {
+					res.weighted = buildScore(c, actual, weightedEst)
+					res.weightedOk = true
+				}
+				if res.tokenxOk || res.weightedOk {
+					results <- res
+				}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	go func() {
+		for _, c := range candidates {
+			jobs <- c
 		}
-		if actual > weightedEst {
-			weightedScores = append(weightedScores, buildScore(c, actual, weightedEst))
+		close(jobs)
+	}()
+
+	for res := range results {
+		if res.tokenxOk {
+			tokenxScores = append(tokenxScores, res.tokenx)
+		}
+		if res.weightedOk {
+			weightedScores = append(weightedScores, res.weighted)
 		}
 	}
 
@@ -173,6 +214,13 @@ func main() {
 
 	fmt.Println()
 	fmt.Printf("Weighted max underestimation ratio: %.2f%%\n", maxRatio(weightedScores)*100)
+}
+
+type scorePair struct {
+	tokenx     scored
+	tokenxOk   bool
+	weighted   scored
+	weightedOk bool
 }
 
 func buildScore(c candidate, actual, est int) scored {
@@ -233,6 +281,20 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func resolveWorkers(requested int) int {
+	maxWorkers := runtime.NumCPU()
+	if maxWorkers < 1 {
+		maxWorkers = 1
+	}
+	if maxWorkers > 8 {
+		maxWorkers = 8
+	}
+	if requested <= 0 || requested > maxWorkers {
+		return maxWorkers
+	}
+	return requested
 }
 
 func estimateWeighted(text string) int {
