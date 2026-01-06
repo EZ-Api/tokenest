@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,6 +38,7 @@ func main() {
 	repoRoot := findRepoRoot()
 	tokenxFixtureDir := filepath.Join(repoRoot, "tokenx", "test", "fixtures", "ebooks")
 	tokenxTypescript := filepath.Join(repoRoot, "tokenx", "node_modules", "typescript", "lib", "lib.es5.d.ts")
+	datasetDir := filepath.Join(repoRoot, "tokenest", "datasets", "test")
 
 	samples := []sample{
 		{
@@ -66,6 +68,7 @@ func main() {
 			cacheFile: "lib.es5.d.ts",
 		},
 	}
+	samples = append(samples, loadDatasetSamples(datasetDir)...)
 
 	loaded := make([]sampleData, 0, len(samples))
 	for _, s := range samples {
@@ -158,6 +161,41 @@ func main() {
 			formatDuration(weightedAvg),
 		)
 	}
+}
+
+func loadDatasetSamples(dir string) []sample {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext != ".txt" && ext != ".go" {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	sort.Strings(paths)
+	samples := make([]sample, 0, len(paths))
+	for _, path := range paths {
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		display := "Dataset: " + strings.ReplaceAll(base, "_", " ")
+		samples = append(samples, sample{
+			name: display,
+			path: path,
+		})
+	}
+	return samples
 }
 
 func mustEncoding() *tiktoken.Tiktoken {
