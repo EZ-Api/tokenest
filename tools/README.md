@@ -17,6 +17,7 @@ Options:
 Notes:
 - This tool uses `gpt-tokenizer` (Node). Run `npm install` in `tokenest/tools/accuracy` if needed.
 - Excel reports require uv + Python deps. Run `cd tokenest/tools/report && uv sync` once to preinstall.
+- Excel output includes deviation bar charts.
 
 ## fit
 Fits Weighted coefficients using linear regression against `tiktoken`.
@@ -44,6 +45,9 @@ Options:
 - `-save-dir`: output directory for saved samples (default: `tokenest/datasets/test`).
 - `-workers`: max concurrency (auto-capped at 8 to avoid host saturation).
 - `-report-dir`: output report directory for markdown + xlsx (default: `tokenest/report`, use `-` to disable).
+
+Notes:
+- Excel output includes ratio bar charts.
 
 ## Reports
 Accuracy reports are written to `tokenest/report/` with timestamps in the filename (.md + .xlsx).

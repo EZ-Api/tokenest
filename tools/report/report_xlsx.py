@@ -96,31 +96,32 @@ def write_accuracy(payload, output_path):
     set_default_columns(ws, header)
     ws.freeze_panes(table_start + 1, 1)
 
-    charts_ws = workbook.add_worksheet("Charts")
-    data_start = table_start + 1
-    data_end = table_start + len(rows)
-    chart_row = 0
-    chart_col = 0
+    if rows:
+        charts_ws = workbook.add_worksheet("Charts")
+        data_start = table_start + 1
+        data_end = table_start + len(rows)
+        chart_row = 0
+        chart_col = 0
 
-    for idx, col in enumerate(deviation_columns):
-        col_index = col["index"]
-        title = col.get("title", header[col_index])
-        chart = workbook.add_chart({"type": "column"})
-        chart.add_series({
-            "name": title,
-            "categories": ["Accuracy", data_start, 0, data_end, 0],
-            "values": ["Accuracy", data_start, col_index, data_end, col_index],
-        })
-        chart.set_title({"name": title})
-        chart.set_y_axis({"num_format": "0.00%"})
-        chart.set_legend({"none": True})
+        for idx, col in enumerate(deviation_columns):
+            col_index = col["index"]
+            title = col.get("title", header[col_index])
+            chart = workbook.add_chart({"type": "column"})
+            chart.add_series({
+                "name": title,
+                "categories": ["Accuracy", data_start, 0, data_end, 0],
+                "values": ["Accuracy", data_start, col_index, data_end, col_index],
+            })
+            chart.set_title({"name": title})
+            chart.set_y_axis({"num_format": "0.00%"})
+            chart.set_legend({"none": True})
 
-        charts_ws.insert_chart(chart_row, chart_col, chart, {"x_scale": 1.2, "y_scale": 1.2})
-        if idx % 2 == 0:
-            chart_col = 9
-        else:
-            chart_col = 0
-            chart_row += 18
+            charts_ws.insert_chart(chart_row, chart_col, chart, {"x_scale": 1.2, "y_scale": 1.2})
+            if idx % 2 == 0:
+                chart_col = 9
+            else:
+                chart_col = 0
+                chart_row += 18
 
     workbook.close()
 
@@ -194,7 +195,14 @@ def write_adversary(payload, output_path):
 
         data_start = table_start + 1
         data_end = table_start + len(rows)
-        if rows and ratio_col >= 0:
+        has_ratio = False
+        if ratio_col >= 0:
+            for row in rows:
+                if len(row) > ratio_col and isinstance(parse_percent(row[ratio_col]), (int, float)):
+                    has_ratio = True
+                    break
+
+        if rows and ratio_col >= 0 and has_ratio:
             chart = workbook.add_chart({"type": "column"})
             chart.add_series({
                 "name": title,

@@ -17,6 +17,7 @@ GOWORK=off go run .
 说明：
 - 依赖 `gpt-tokenizer`（Node），需要时在 `tokenest/tools/accuracy` 下执行 `npm install`。
 - Excel 报告依赖 uv + Python 包，可先执行 `cd tokenest/tools/report && uv sync`。
+- Excel 会包含偏差柱状图。
 
 ## fit
 使用线性回归拟合 Weighted 系数，使其更接近 `tiktoken`。
@@ -44,6 +45,9 @@ GOWORK=off go run . -samples 2000 -length 50000 -top 5 -workers 4
 - `-save-dir`：保存目录（默认 `tokenest/datasets/test`）。
 - `-workers`：并发数（自动限制到 8，避免打满主机）。
 - `-report-dir`：报告输出目录（默认 `tokenest/report`，同时输出 md + xlsx，用 `-` 关闭）。
+
+说明：
+- Excel 会包含比例柱状图。
 
 ## 报告
 accuracy 报告会写入 `tokenest/report/`，文件名包含时间戳（.md + .xlsx）。
