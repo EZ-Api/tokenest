@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -130,7 +133,7 @@ func main() {
 		workers = flag.Int("workers", 0, "max concurrent workers (default: auto)")
 		saveDir = flag.String("save-dir", "", "directory to save worst-case samples (default: <repo>/tokenest/datasets/test)")
 		saveTop = flag.Int("save-top", 5, "save top N samples for TokenX and Weighted (0 disables)")
-		report  = flag.String("report-dir", "", "write markdown report to this directory (default: <repo>/tokenest/report, use '-' to disable)")
+		report  = flag.String("report-dir", "", "write markdown + xlsx reports to this directory (default: <repo>/tokenest/report, use '-' to disable)")
 	)
 	flag.Parse()
 
@@ -295,7 +298,7 @@ func main() {
 			SaveTop: *saveTop,
 			SaveDir: resolvedSaveDir,
 		}
-		if err := writeReport(resolvedReportDir, params, tokenxUnder, tokenxOver, weightedUnder, weightedOver); err != nil {
+		if err := writeReports(resolvedReportDir, params, tokenxUnder, tokenxOver, weightedUnder, weightedOver); err != nil {
 			fmt.Fprintf(os.Stderr, "report error: %v\n", err)
 		} else {
 			fmt.Printf("Report written to %s\n", resolvedReportDir)
@@ -454,12 +457,25 @@ func sanitizeName(name string) string {
 	return b.String()
 }
 
-func writeReport(dir string, params reportParams, tokenxUnder, tokenxOver, weightedUnder, weightedOver []scored) error {
+func writeReports(dir string, params reportParams, tokenxUnder, tokenxOver, weightedUnder, weightedOver []scored) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
 	now := time.Now().UTC()
+
+	if err := writeMarkdownReport(dir, now, params, tokenxUnder, tokenxOver, weightedUnder, weightedOver); err != nil {
+		return err
+	}
+
+	if err := writeXLSXReport(dir, now, params, tokenxUnder, tokenxOver, weightedUnder, weightedOver); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func writeMarkdownReport(dir string, now time.Time, params reportParams, tokenxUnder, tokenxOver, weightedUnder, weightedOver []scored) error {
 	fileName := fmt.Sprintf("adversary-%s.md", now.Format("20060102-150405Z"))
 	path := filepath.Join(dir, fileName)
 
@@ -505,6 +521,191 @@ func writeReport(dir string, params reportParams, tokenxUnder, tokenxOver, weigh
 	writeScoreTable(&b, params.Top, weightedOver)
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+type adversaryParam struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type adversarySummary struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+type adversaryTable struct {
+	Title       string     `json:"title"`
+	Header      []string   `json:"header"`
+	Rows        [][]string `json:"rows"`
+	RatioColumn int        `json:"ratio_column"`
+	NameColumn  int        `json:"name_column"`
+}
+
+type adversaryXLSXPayload struct {
+	ReportType  string             `json:"report_type"`
+	Title       string             `json:"title"`
+	GeneratedAt string             `json:"generated_at"`
+	Params      []adversaryParam   `json:"params"`
+	Summary     []adversarySummary `json:"summary"`
+	Tables      []adversaryTable   `json:"tables"`
+}
+
+func writeXLSXReport(dir string, now time.Time, params reportParams, tokenxUnder, tokenxOver, weightedUnder, weightedOver []scored) error {
+	header := []string{"Rank", "Name", "Kind", "Actual", "Estimated", "Diff", "Ratio", "Sample"}
+
+	payload := adversaryXLSXPayload{
+		ReportType:  "adversary",
+		Title:       "adversary report",
+		GeneratedAt: now.Format(time.RFC3339),
+		Params: []adversaryParam{
+			{Name: "length", Value: fmt.Sprintf("%d", params.Length)},
+			{Name: "samples", Value: fmt.Sprintf("%d", params.Samples)},
+			{Name: "top", Value: fmt.Sprintf("%d", params.Top)},
+			{Name: "workers", Value: fmt.Sprintf("%d", params.Workers)},
+			{Name: "seed", Value: fmt.Sprintf("%d", params.Seed)},
+			{Name: "save-top", Value: fmt.Sprintf("%d", params.SaveTop)},
+		},
+		Summary: []adversarySummary{
+			{Label: "TokenX max underestimation ratio", Value: fmt.Sprintf("%.2f%%", maxRatio(tokenxUnder)*100)},
+			{Label: "TokenX max overestimation ratio", Value: fmt.Sprintf("%.2f%%", maxRatio(tokenxOver)*100)},
+			{Label: "Weighted max underestimation ratio", Value: fmt.Sprintf("%.2f%%", maxRatio(weightedUnder)*100)},
+			{Label: "Weighted max overestimation ratio", Value: fmt.Sprintf("%.2f%%", maxRatio(weightedOver)*100)},
+		},
+		Tables: []adversaryTable{
+			{
+				Title:       "TokenX worst underestimation",
+				Header:      header,
+				Rows:        buildScoreRows(params.Top, tokenxUnder),
+				RatioColumn: 6,
+				NameColumn:  1,
+			},
+			{
+				Title:       "TokenX worst overestimation",
+				Header:      header,
+				Rows:        buildScoreRows(params.Top, tokenxOver),
+				RatioColumn: 6,
+				NameColumn:  1,
+			},
+			{
+				Title:       "Weighted worst underestimation",
+				Header:      header,
+				Rows:        buildScoreRows(params.Top, weightedUnder),
+				RatioColumn: 6,
+				NameColumn:  1,
+			},
+			{
+				Title:       "Weighted worst overestimation",
+				Header:      header,
+				Rows:        buildScoreRows(params.Top, weightedOver),
+				RatioColumn: 6,
+				NameColumn:  1,
+			},
+		},
+	}
+
+	if params.SaveDir != "" {
+		payload.Params = append(payload.Params, adversaryParam{Name: "save-dir", Value: params.SaveDir})
+	}
+
+	outputName := fmt.Sprintf("adversary-%s.xlsx", now.Format("20060102-150405Z"))
+	outputPath := filepath.Join(dir, outputName)
+	if absPath, err := filepath.Abs(outputPath); err == nil {
+		outputPath = absPath
+	}
+	return runXLSXReport(outputPath, payload)
+}
+
+func buildScoreRows(top int, scores []scored) [][]string {
+	limit := min(top, len(scores))
+	rows := make([][]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		s := scores[i]
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", i+1),
+			s.Name,
+			s.Kind,
+			fmt.Sprintf("%d", s.Actual),
+			fmt.Sprintf("%d", s.Est),
+			fmt.Sprintf("%d", s.Diff),
+			fmt.Sprintf("%.2f%%", s.Ratio*100),
+			s.Sample,
+		})
+	}
+	if limit == 0 {
+		rows = append(rows, []string{"-", "-", "-", "-", "-", "-", "-", "-"})
+	}
+	return rows
+}
+
+func runXLSXReport(outputPath string, payload any) error {
+	repoRoot := findRepoRoot()
+	reportDir := filepath.Join(repoRoot, "tokenest", "tools", "report")
+	if _, err := os.Stat(reportDir); err != nil {
+		return fmt.Errorf("report generator not found: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(reportDir, "adversary-report-*.json")
+	if err != nil {
+		return err
+	}
+
+	encoder := json.NewEncoder(tmpFile)
+	if err := encoder.Encode(payload); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	tmpPath := tmpFile.Name()
+
+	if err := runReportScript(reportDir, tmpPath, outputPath); err != nil {
+		return err
+	}
+
+	_ = os.Remove(tmpPath)
+	return nil
+}
+
+func runReportScript(reportDir, inputPath, outputPath string) error {
+	if err := runWithUV(reportDir, inputPath, outputPath); err == nil {
+		return nil
+	} else if fallbackErr := runWithPython(reportDir, inputPath, outputPath); fallbackErr != nil {
+		return fmt.Errorf("uv run failed: %v; python fallback failed: %v", err, fallbackErr)
+	}
+	return nil
+}
+
+func runWithUV(reportDir, inputPath, outputPath string) error {
+	cmd := exec.Command("uv", "run", "python", "report_xlsx.py", "--input", inputPath, "--output", outputPath)
+	cmd.Dir = reportDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("uv run error: %s", msg)
+	}
+	return nil
+}
+
+func runWithPython(reportDir, inputPath, outputPath string) error {
+	cmd := exec.Command("python3", "report_xlsx.py", "--input", inputPath, "--output", outputPath)
+	cmd.Dir = reportDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("python error: %s", msg)
+	}
+	return nil
 }
 
 func writeScoreTable(b *strings.Builder, top int, scores []scored) {
