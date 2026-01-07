@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import xlsxwriter
+from xlsxwriter.utility import xl_col_to_name
 
 
 def parse_numeric(value):
@@ -78,25 +79,20 @@ def write_accuracy(payload, output_path):
     deviation_indexes = [col["index"] for col in deviation_columns]
 
     workbook = xlsxwriter.Workbook(output_path)
-    fmt_title = workbook.add_format({"bold": True, "font_size": 14})
     fmt_header = workbook.add_format({"bold": True, "bg_color": "#E6EEF7"})
     fmt_percent = workbook.add_format({"num_format": "0.00%"})
     fmt_default = workbook.add_format({})
 
     ws = workbook.add_worksheet("Accuracy")
-    ws.write(0, 0, payload.get("title", "accuracy report"), fmt_title)
-    ws.write(1, 0, "Generated at:")
-    ws.write(1, 1, payload.get("generated_at", ""))
-    note = payload.get("note")
-    if note:
-        ws.write(2, 0, note)
-
-    table_start = 4
+    table_start = 0
     write_table(ws, table_start, 0, header, rows, set(deviation_indexes), fmt_header, fmt_percent, fmt_default)
     set_default_columns(ws, header)
-    ws.freeze_panes(table_start + 1, 1)
-
+    ws.freeze_panes(1, 1)
     if rows:
+        ws.autofilter(0, 0, len(rows), max(len(header) - 1, 0))
+
+    if rows and deviation_columns:
+        write_accuracy_summary(workbook, deviation_columns, header, len(rows))
         charts_ws = workbook.add_worksheet("Charts")
         data_start = table_start + 1
         data_end = table_start + len(rows)
@@ -124,6 +120,52 @@ def write_accuracy(payload, output_path):
                 chart_row += 18
 
     workbook.close()
+
+
+def excel_range(sheet, col, start_row, end_row):
+    col_letter = xl_col_to_name(col)
+    start = start_row + 1
+    end = end_row + 1
+    return f"{sheet}!${col_letter}${start}:${col_letter}${end}"
+
+
+def write_accuracy_summary(workbook, deviation_columns, header, row_count):
+    fmt_header = workbook.add_format({"bold": True, "bg_color": "#E6EEF7"})
+    fmt_percent = workbook.add_format({"num_format": "0.00%"})
+    fmt_default = workbook.add_format({})
+
+    ws = workbook.add_worksheet("Summary")
+    ws.write(0, 0, "Algorithm", fmt_header)
+    ws.write(0, 1, "Best (closest to 0)", fmt_header)
+    ws.write(0, 2, "Best sample", fmt_header)
+    ws.write(0, 3, "Worst (abs)", fmt_header)
+    ws.write(0, 4, "Worst sample", fmt_header)
+
+    data_start = 1
+    data_end = row_count
+    desc_range = excel_range("Accuracy", 0, data_start, data_end)
+
+    for idx, col in enumerate(deviation_columns):
+        row = idx + 1
+        col_index = col["index"]
+        title = col.get("title", header[col_index])
+        dev_range = excel_range("Accuracy", col_index, data_start, data_end)
+
+        ws.write(row, 0, title, fmt_default)
+
+        best_value = f"=LET(dev,ABS({dev_range}),XLOOKUP(MIN(dev),dev,{dev_range}))"
+        best_sample = f"=LET(dev,ABS({dev_range}),XLOOKUP(MIN(dev),dev,{desc_range}))"
+        worst_value = f"=LET(dev,ABS({dev_range}),XLOOKUP(MAX(dev),dev,{dev_range}))"
+        worst_sample = f"=LET(dev,ABS({dev_range}),XLOOKUP(MAX(dev),dev,{desc_range}))"
+
+        ws.write_formula(row, 1, best_value, fmt_percent)
+        ws.write_formula(row, 2, best_sample, fmt_default)
+        ws.write_formula(row, 3, worst_value, fmt_percent)
+        ws.write_formula(row, 4, worst_sample, fmt_default)
+
+    ws.set_column(0, 0, 32)
+    ws.set_column(1, 3, 20)
+    ws.set_column(4, 4, 48)
 
 
 def sanitize_sheet_name(name):
