@@ -151,3 +151,16 @@ func TestAutoStrategyDefaults(t *testing.T) {
 		t.Fatalf("expected StrategyFast, got %v", textRes.Strategy)
 	}
 }
+
+func TestStrategyZRSelection(t *testing.T) {
+	if StrategyZR.String() != "ZR" {
+		t.Fatalf("expected ZR string, got %q", StrategyZR.String())
+	}
+	res := EstimateText("Hello ZR", Options{Strategy: StrategyZR})
+	if res.Strategy != StrategyZR {
+		t.Fatalf("expected StrategyZR, got %v", res.Strategy)
+	}
+	if res.Tokens <= 0 {
+		t.Fatalf("expected non-zero tokens, got %d", res.Tokens)
+	}
+}

@@ -21,6 +21,10 @@ const (
 	// StrategyWeighted uses tokenx-style segmentation with lightweight profile tuning.
 	// O(n) complexity, best balance of accuracy and throughput for usage fallback.
 	StrategyWeighted
+
+	// StrategyZR uses ZR tuning parameters for higher-fidelity estimation on mixed inputs.
+	// O(n) complexity, opt-in alternative to Weighted.
+	StrategyZR
 )
 
 func (s Strategy) String() string {
@@ -33,6 +37,8 @@ func (s Strategy) String() string {
 		return "fast"
 	case StrategyWeighted:
 		return "weighted"
+	case StrategyZR:
+		return "ZR"
 	default:
 		return "unknown"
 	}
@@ -105,10 +111,10 @@ func (c ImageCounts) Total() int {
 
 // CategoryBreakdown provides per-category token details when Explain is enabled.
 type CategoryBreakdown struct {
-	Category   string
-	BaseUnits  float64
-	Weight     float64
-	Tokens     float64
+	Category  string
+	BaseUnits float64
+	Weight    float64
+	Tokens    float64
 }
 
 // Result contains the estimation result and metadata.
@@ -165,6 +171,8 @@ func EstimateBytes(data []byte, opts Options) Result {
 			breakdown = make([]CategoryBreakdown, 0)
 		}
 		tokens = estimateWeighted(string(data), profile, opts.Explain, &breakdown)
+	case StrategyZR:
+		tokens = estimateZR(string(data))
 	default:
 		tokens = estimateUltraFast(data)
 	}
@@ -201,6 +209,8 @@ func EstimateText(text string, opts Options) Result {
 			breakdown = make([]CategoryBreakdown, 0)
 		}
 		tokens = estimateWeighted(text, profile, opts.Explain, &breakdown)
+	case StrategyZR:
+		tokens = estimateZR(text)
 	default:
 		tokens = estimateFast(text)
 	}

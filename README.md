@@ -3,7 +3,7 @@
 A zero-dependency Go library for coarse and fine-grained LLM token estimation.
 
 ## Highlights
-- **Three strategies**: UltraFast, Fast, Weighted
+- **Four strategies**: UltraFast, Fast, Weighted, ZR
 - **Auto by default**: works without caller preprocessing
 - **Provider-aware profiles**: OpenAI / Claude / Gemini (fallback to OpenAI for everything else)
 - **Optional LRU cache** for long, stable text
@@ -46,6 +46,7 @@ func main() {
 | UltraFast | raw bytes | O(1) | coarse filtering, high QPS |
 | Fast | extracted text | O(min(n,1000)) | preflight estimation |
 | Weighted | extracted text | O(n) | missing-usage fallback |
+| ZR | extracted text | O(n) | opt-in, fitted categorical tuning |
 
 Auto strategy selection:
 - **raw bytes** → UltraFast
@@ -57,6 +58,9 @@ Weighted starts from tokenx segmentation and applies light ratio tuning:
 - **Adjustments**: CJK/punctuation/digit ratios with per-profile tuning
 - **Clamp**: bounded to avoid extreme drift
 - **Fallback**: unknown providers/models → OpenAI profile
+
+## ZR Strategy
+ZR is an opt-in strategy generated from the fit tool's latest parameters. It classifies text into categories and applies fitted coefficients. Use it when you want the current fit behavior without changing Weighted defaults.
 
 ## Profiles
 Profile resolution order:
@@ -82,6 +86,7 @@ Caching is **off by default** and only applies to text >= 512 bytes.
 `tokenest` is heuristic and will not exactly match tokenizer outputs. In general:
 
 - **Weighted** is closest (best for mixed text/code/CJK)
+- **ZR** is an opt-in alternative based on the latest fit
 - **Fast** is good for English and improves CJK/code vs UltraFast
 - **UltraFast** is coarse and may undercount CJK/code
 

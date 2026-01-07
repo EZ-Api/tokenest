@@ -3,7 +3,7 @@
 一个**零依赖**的 Go 语言 Token 估算库，用于 LLM 请求的 tokens 预估。
 
 ## 特点
-- **三种策略**：UltraFast / Fast / Weighted
+- **四种策略**：UltraFast / Fast / Weighted / ZR
 - **默认自动选择**：无需调用方预处理也能用
 - **供应商 Profile**：OpenAI / Claude / Gemini（其他模型默认回落到 OpenAI 权重）
 - **可选 LRU 缓存**：适合系统提示词等稳定文本
@@ -46,6 +46,7 @@ func main() {
 | UltraFast | 原始 bytes | O(1) | 粗筛、高 QPS |
 | Fast | 提取后的文本 | O(min(n,1000)) | 预校验 |
 | Weighted | 提取后的文本 | O(n) | usage 缺失回填 |
+| ZR | 提取后的文本 | O(n) | 可选拟合分类策略 |
 
 默认自动策略：
 - **raw bytes** → UltraFast
@@ -56,6 +57,9 @@ func main() {
 - **调整**：按 CJK/标点/数字比例做轻量系数修正
 - **限制**：结果做上下限夹紧，避免极端漂移
 - **回落**：非“御三家”的模型统一回落到 OpenAI Profile
+
+## ZR 策略
+ZR 为可选策略，基于 fit 工具最新拟合参数，将文本分类后使用拟合系数计算。适合在不影响 Weighted 默认行为的前提下使用最新拟合结果。
 
 ## Profile 解析顺序
 1) `Options.Profile`（手动指定）
@@ -79,6 +83,7 @@ res := est.EstimateText(systemPrompt, tokenest.Options{})
 `tokenest` 是启发式估算，无法与 tokenizer 完全一致。通常情况下：
 
 - **Weighted** 最接近（对混合文本/代码/CJK 最好）
+- **ZR** 为可选的拟合策略
 - **Fast** 英文表现好，较 UltraFast 对 CJK/代码更稳
 - **UltraFast** 最粗糙，可能低估 CJK/代码
 
