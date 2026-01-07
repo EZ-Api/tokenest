@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -25,6 +27,7 @@ type sample struct {
 type sampleData struct {
 	sample sample
 	text   string
+	actual float64 // Pre-calculated ground truth
 }
 
 type tokenXStats struct {
@@ -35,6 +38,7 @@ type tokenXStats struct {
 	SpaceRunes int
 	UpperRunes int
 	HexRunes   int
+	CodePunct  int
 }
 
 type featureRow struct {
@@ -50,11 +54,18 @@ const (
 	CatCapital
 	CatDense
 	CatHex
+	CatAlnum
+	CatCode
+	CatText
 )
 
 type searchConfig struct {
-	charsPerToken  float64
-	shortThreshold int
+	charsPerToken       float64
+	shortThreshold      int
+	capitalThreshold    float64
+	denseThreshold      float64
+	hexThreshold        float64
+	alnumPunctThreshold float64
 }
 
 func main() {
@@ -165,113 +176,190 @@ func main() {
 		}
 	}
 
+	// Pre-calculate actual tokens
+	fmt.Println("Pre-calculating ground truth tokens...")
+	for i := range trainItems {
+		trainItems[i].actual = float64(len(enc.Encode(trainItems[i].text, nil, nil)))
+	}
+	for i := range testItems {
+		testItems[i].actual = float64(len(enc.Encode(testItems[i].text, nil, nil)))
+	}
+
 	// Grid Search
 	var bestConfig searchConfig
 	var bestCoeffs map[int][]float64
 	bestTrainMAPE := math.MaxFloat64
 
-	fmt.Println("Starting grid search for hyperparameters...")
+	fmt.Println("Starting parallel grid search for hyperparameters...")
 
-	for chars := 3.0; chars <= 8.0; chars += 0.5 {
-		for threshold := 1; threshold <= 6; threshold++ {
-			cfg := searchConfig{
-				charsPerToken:  chars,
-				shortThreshold: threshold,
-			}
+	type jobResult struct {
+		cfg    searchConfig
+		mape   float64
+		coeffs map[int][]float64
+	}
 
-			// Build train features and split by category
-			trainRows := make([]featureRow, 0, len(trainItems))
-			rowsByCat := make(map[int][]featureRow)
+	jobs := make(chan searchConfig, 1000)
+	results := make(chan jobResult, 1000)
+	var wg sync.WaitGroup
 
-			for _, item := range trainItems {
-				row := makeFeatureRow(item.sample.name, item.text, enc, cfg)
-				trainRows = append(trainRows, row)
-				rowsByCat[row.category] = append(rowsByCat[row.category], row)
-			}
+	// Start workers
+	numWorkers := runtime.NumCPU()
+	fmt.Printf("Using %d workers\n", numWorkers)
 
-			// Fit for each category
-			coeffsByCat := make(map[int][]float64)
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for cfg := range jobs {
+				// Build train features and split by category
+				trainRows := make([]featureRow, 0, len(trainItems))
+				rowsByCat := make(map[int][]featureRow)
 
-			// First, fit General category (or all data if we wanted a global fallback,
-			// but here we fit the subset of data classified as General)
-			// Actually, to ensure stability, let's fit General on ALL data first as a fallback,
-			// then refine for specific categories if possible?
-			// No, let's stick to strict subsets but add fallback logic.
-
-			// Helper to fit a subset
-			fitSubset := func(rows []featureRow) ([]float64, error) {
-				if len(rows) == 0 {
-					return nil, fmt.Errorf("empty subset")
+				for _, item := range trainItems {
+					// Use pre-calculated actual
+					row := makeFeatureRowWithActual(item.sample.name, item.text, item.actual, cfg)
+					trainRows = append(trainRows, row)
+					rowsByCat[row.category] = append(rowsByCat[row.category], row)
 				}
-				x := make([][]float64, 0, len(rows))
-				y := make([]float64, 0, len(rows))
-				for _, row := range rows {
-					x = append(x, row.feat)
-					y = append(y, row.actual)
-				}
-				return solveLeastSquares(x, y)
-			}
 
-			// 1. Fit General Category
-			genCoeffs, err := fitSubset(rowsByCat[CatGeneral])
-			if err != nil {
-				// If we can't even fit General, this config is probably bad (or General subset is empty/singular)
-				// Try fitting on ALL rows as a desperate fallback for General
-				genCoeffs, err = fitSubset(trainRows)
-				if err != nil {
-					continue // Skip this config entirely
-				}
-			}
-			coeffsByCat[CatGeneral] = genCoeffs
+				// Fit for each category
+				coeffsByCat := make(map[int][]float64)
 
-			// 2. Fit other categories, fallback to General if fail
-			for _, cat := range []int{CatCapital, CatDense, CatHex} {
-				rows := rowsByCat[cat]
-				if len(rows) < 2 {
-					coeffsByCat[cat] = genCoeffs
-					continue
-				}
-				catCoeffs, err := fitSubset(rows)
-				if err != nil {
-					// Try simplified fit (only base factor) if full fit fails
-					// This often happens if CJK/Digit/Punct ratios are all 0 for the subset
-					simpleCoeffs, err2 := fitSimple(rows)
-					if err2 == nil {
-						coeffsByCat[cat] = simpleCoeffs
-					} else {
-						coeffsByCat[cat] = genCoeffs
+				// Helper to fit a subset
+				fitSubset := func(rows []featureRow) ([]float64, error) {
+					if len(rows) == 0 {
+						return nil, fmt.Errorf("empty subset")
 					}
-				} else {
-					coeffsByCat[cat] = catCoeffs
+					x := make([][]float64, 0, len(rows))
+					y := make([]float64, 0, len(rows))
+					for _, row := range rows {
+						x = append(x, row.feat)
+						y = append(y, row.actual)
+					}
+					return solveLeastSquares(x, y)
 				}
-			}
 
-			// Evaluate on Train (using category-specific coeffs)
-			mape := calculateMAPE(trainRows, coeffsByCat)
-			if mape < bestTrainMAPE {
-				bestTrainMAPE = mape
-				bestConfig = cfg
-				bestCoeffs = coeffsByCat
+				// 1. Fit General Category
+				genCoeffs, err := fitSubset(rowsByCat[CatGeneral])
+				if err != nil {
+					// Fallback to fitting all rows if General subset fails
+					genCoeffs, err = fitSubset(trainRows)
+					if err != nil {
+						continue // Skip this config
+					}
+				}
+				coeffsByCat[CatGeneral] = genCoeffs
+
+				// 2. Fit other categories
+				for _, cat := range []int{CatCapital, CatDense, CatHex, CatAlnum} {
+					rows := rowsByCat[cat]
+					if len(rows) < 2 {
+						// Fallback logic
+						if cat == CatAlnum {
+							if capCoeffs, ok := coeffsByCat[CatCapital]; ok && len(capCoeffs) > 0 {
+								coeffsByCat[cat] = capCoeffs
+							} else {
+								coeffsByCat[cat] = genCoeffs
+							}
+						} else {
+							coeffsByCat[cat] = genCoeffs
+						}
+						continue
+					}
+					catCoeffs, err := fitSubset(rows)
+					if err != nil {
+						simpleCoeffs, err2 := fitSimple(rows)
+						if err2 == nil {
+							coeffsByCat[cat] = simpleCoeffs
+						} else {
+							// Fallback on error
+							if cat == CatAlnum {
+								if capCoeffs, ok := coeffsByCat[CatCapital]; ok && len(capCoeffs) > 0 {
+									coeffsByCat[cat] = capCoeffs
+								} else {
+									coeffsByCat[cat] = genCoeffs
+								}
+							} else {
+								coeffsByCat[cat] = genCoeffs
+							}
+						}
+					} else {
+						coeffsByCat[cat] = catCoeffs
+					}
+				}
+
+				// Evaluate
+				mape := calculateMAPE(trainRows, coeffsByCat)
+				results <- jobResult{cfg: cfg, mape: mape, coeffs: coeffsByCat}
+			}
+		}()
+	}
+
+	// Result collector
+	done := make(chan bool)
+	go func() {
+		count := 0
+		for res := range results {
+			count++
+			if count%1000 == 0 {
+				fmt.Printf("Processed %d configs...\r", count)
+			}
+			if res.mape < bestTrainMAPE {
+				bestTrainMAPE = res.mape
+				bestConfig = res.cfg
+				bestCoeffs = res.coeffs
+			}
+		}
+		done <- true
+	}()
+
+	// Feed jobs
+	for chars := 3.0; chars <= 5.0; chars += 0.5 {
+		for threshold := 4; threshold <= 6; threshold++ {
+			for capThresh := 0.3; capThresh <= 0.8; capThresh += 0.05 {
+				for denseThresh := 0.01; denseThresh <= 0.05; denseThresh += 0.01 {
+					for hexThresh := 0.90; hexThresh <= 0.99; hexThresh += 0.02 {
+						for alnumThresh := 0.01; alnumThresh <= 0.10; alnumThresh += 0.02 {
+							jobs <- searchConfig{
+								charsPerToken:       chars,
+								shortThreshold:      threshold,
+								capitalThreshold:    capThresh,
+								denseThreshold:      denseThresh,
+								hexThreshold:        hexThresh,
+								alnumPunctThreshold: alnumThresh,
+							}
+						}
+					}
+				}
 			}
 		}
 	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+	<-done
 
 	fmt.Printf("\n=== BEST CONFIGURATION FOUND ===\n")
 	fmt.Printf("Train MAPE: %.4f%%\n", bestTrainMAPE)
 	fmt.Printf("CharsPerToken: %.1f\n", bestConfig.charsPerToken)
 	fmt.Printf("ShortThreshold: %d\n", bestConfig.shortThreshold)
+	fmt.Printf("CapitalThreshold: %.2f\n", bestConfig.capitalThreshold)
+	fmt.Printf("DenseThreshold: %.2f\n", bestConfig.denseThreshold)
+	fmt.Printf("HexThreshold: %.2f\n", bestConfig.hexThreshold)
+	fmt.Printf("AlnumPunctThreshold: %.2f\n", bestConfig.alnumPunctThreshold)
 
 	fmt.Println("\nWeighted fit coefficients (o200k_base):")
 	printCoeffs("General", bestCoeffs[CatGeneral])
 	printCoeffs("Capital", bestCoeffs[CatCapital])
 	printCoeffs("Dense", bestCoeffs[CatDense])
 	printCoeffs("Hex", bestCoeffs[CatHex])
+	printCoeffs("Alnum", bestCoeffs[CatAlnum])
 
 	// Re-evaluate on Train with best config
 	fmt.Println("\n=== TRAIN SET EVALUATION (Best Config) ===")
 	finalTrainRows := make([]featureRow, 0, len(trainItems))
 	for _, item := range trainItems {
-		finalTrainRows = append(finalTrainRows, makeFeatureRow(item.sample.name, item.text, enc, bestConfig))
+		finalTrainRows = append(finalTrainRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, bestConfig))
 	}
 	evaluate(finalTrainRows, bestCoeffs)
 
@@ -279,7 +367,7 @@ func main() {
 	fmt.Println("\n=== TEST SET EVALUATION (Best Config) ===")
 	finalTestRows := make([]featureRow, 0, len(testItems))
 	for _, item := range testItems {
-		finalTestRows = append(finalTestRows, makeFeatureRow(item.sample.name, item.text, enc, bestConfig))
+		finalTestRows = append(finalTestRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, bestConfig))
 	}
 	evaluate(finalTestRows, bestCoeffs)
 
@@ -331,7 +419,7 @@ func calculateMAPE(rows []featureRow, coeffsMap map[int][]float64) float64 {
 	return totalAbsPct / float64(count)
 }
 
-func classify(stats tokenXStats) int {
+func classify(stats tokenXStats, cfg searchConfig) int {
 	total := float64(stats.TotalRunes)
 	if total == 0 {
 		return CatGeneral
@@ -346,7 +434,7 @@ func classify(stats tokenXStats) int {
 	// Rule 1: Capital
 	// If significant portion of content is uppercase
 	// Note: TotalRunes includes everything (CJK, Punct, Digit, Letters).
-	if float64(stats.UpperRunes)/total > 0.4 {
+	if float64(stats.UpperRunes)/total > cfg.capitalThreshold {
 		return CatCapital
 	}
 
@@ -360,11 +448,18 @@ func classify(stats tokenXStats) int {
 		spaceRatio := float64(stats.SpaceRunes) / total
 		// Normal text usually has ~0.15-0.2 spaces per char.
 		// Minified code or hex dumps have very few.
-		if spaceRatio < 0.02 {
+		if spaceRatio < cfg.denseThreshold {
 			// Check for Hex
-			if float64(stats.HexRunes)/total > 0.95 {
+			if float64(stats.HexRunes)/total > cfg.hexThreshold {
 				return CatHex
 			}
+			// Check for Alnum (Low punctuation)
+			// Minified JSON/JS has high punctuation.
+			// Random alnum strings have low punctuation.
+			if float64(stats.PunctRunes)/total < cfg.alnumPunctThreshold {
+				return CatAlnum
+			}
+
 			return CatDense
 		}
 	}
@@ -374,9 +469,13 @@ func classify(stats tokenXStats) int {
 
 func makeFeatureRow(name string, text string, enc *tiktoken.Tiktoken, cfg searchConfig) featureRow {
 	actual := float64(len(enc.Encode(text, nil, nil)))
+	return makeFeatureRowWithActual(name, text, actual, cfg)
+}
+
+func makeFeatureRowWithActual(name string, text string, actual float64, cfg searchConfig) featureRow {
 	baseTokens, stats := estimateTokenXWithStats(text, cfg)
 	features := buildFeatures(baseTokens, stats)
-	cat := classify(stats)
+	cat := classify(stats, cfg)
 	return featureRow{
 		name:     name,
 		actual:   actual,
@@ -406,6 +505,8 @@ func evaluate(rows []featureRow, coeffsMap map[int][]float64) {
 			catName = "Dense"
 		} else if row.category == CatHex {
 			catName = "Hex"
+		} else if row.category == CatAlnum {
+			catName = "Alnum"
 		}
 		fmt.Printf("%s [%s]\tactual=%.0f\tpred=%.0f\tape=%.2f%%\n", row.name, catName, row.actual, pred, pct)
 	}
