@@ -136,10 +136,10 @@ def write_accuracy_summary(workbook, deviation_columns, header, row_count):
 
     ws = workbook.add_worksheet("Summary")
     ws.write(0, 0, "Algorithm", fmt_header)
-    ws.write(0, 1, "Best (closest to 0)", fmt_header)
-    ws.write(0, 2, "Best sample", fmt_header)
-    ws.write(0, 3, "Worst (abs)", fmt_header)
-    ws.write(0, 4, "Worst sample", fmt_header)
+    ws.write(0, 1, "Max overestimation", fmt_header)
+    ws.write(0, 2, "Over sample", fmt_header)
+    ws.write(0, 3, "Max underestimation", fmt_header)
+    ws.write(0, 4, "Under sample", fmt_header)
 
     data_start = 1
     data_end = row_count
@@ -153,15 +153,15 @@ def write_accuracy_summary(workbook, deviation_columns, header, row_count):
 
         ws.write(row, 0, title, fmt_default)
 
-        best_value = f"=LET(dev,ABS({dev_range}),XLOOKUP(MIN(dev),dev,{dev_range}))"
-        best_sample = f"=LET(dev,ABS({dev_range}),XLOOKUP(MIN(dev),dev,{desc_range}))"
-        worst_value = f"=LET(dev,ABS({dev_range}),XLOOKUP(MAX(dev),dev,{dev_range}))"
-        worst_sample = f"=LET(dev,ABS({dev_range}),XLOOKUP(MAX(dev),dev,{desc_range}))"
+        max_over = f"=MAX({dev_range})"
+        max_over_sample = f"=INDEX({desc_range},MATCH(MAX({dev_range}),{dev_range},0))"
+        max_under = f"=MIN({dev_range})"
+        max_under_sample = f"=INDEX({desc_range},MATCH(MIN({dev_range}),{dev_range},0))"
 
-        ws.write_formula(row, 1, best_value, fmt_percent)
-        ws.write_formula(row, 2, best_sample, fmt_default)
-        ws.write_formula(row, 3, worst_value, fmt_percent)
-        ws.write_formula(row, 4, worst_sample, fmt_default)
+        ws.write_formula(row, 1, max_over, fmt_percent)
+        ws.write_formula(row, 2, max_over_sample, fmt_default)
+        ws.write_formula(row, 3, max_under, fmt_percent)
+        ws.write_formula(row, 4, max_under_sample, fmt_default)
 
     ws.set_column(0, 0, 32)
     ws.set_column(1, 3, 20)
