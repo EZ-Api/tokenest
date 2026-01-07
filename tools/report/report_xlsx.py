@@ -102,13 +102,14 @@ def write_accuracy(payload, output_path):
         for idx, col in enumerate(deviation_columns):
             col_index = col["index"]
             title = col.get("title", header[col_index])
+            label = deviation_label(title)
             chart = workbook.add_chart({"type": "column"})
             chart.add_series({
-                "name": title,
+                "name": label,
                 "categories": ["Accuracy", data_start, 0, data_end, 0],
                 "values": ["Accuracy", data_start, col_index, data_end, col_index],
             })
-            chart.set_title({"name": title})
+            chart.set_title({"name": f"{label} Deviation"})
             chart.set_y_axis({"num_format": "0.00%"})
             chart.set_legend({"none": True})
 
@@ -149,9 +150,10 @@ def write_accuracy_summary(workbook, deviation_columns, header, row_count):
         row = idx + 1
         col_index = col["index"]
         title = col.get("title", header[col_index])
+        label = deviation_label(title)
         dev_range = excel_range("Accuracy", col_index, data_start, data_end)
 
-        ws.write(row, 0, title, fmt_default)
+        ws.write(row, 0, label, fmt_default)
 
         max_over = f"=MAX({dev_range})"
         max_over_sample = f"=INDEX({desc_range},MATCH(MAX({dev_range}),{dev_range},0))"
@@ -166,6 +168,13 @@ def write_accuracy_summary(workbook, deviation_columns, header, row_count):
     ws.set_column(0, 0, 32)
     ws.set_column(1, 3, 20)
     ws.set_column(4, 4, 48)
+
+
+def deviation_label(title):
+    suffix = " Deviation"
+    if title.endswith(suffix):
+        return title[: -len(suffix)]
+    return title
 
 
 def sanitize_sheet_name(name):

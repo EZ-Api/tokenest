@@ -113,6 +113,8 @@ func main() {
 		"NewAPI Deviation",
 		"Weighted",
 		"Weighted Deviation",
+		"ZR",
+		"ZR Deviation",
 		"tiktoken-go Avg Time",
 		"GPT-Tokenizer Avg Time",
 		"UltraFast Avg Time",
@@ -120,6 +122,7 @@ func main() {
 		"TokenX Avg Time",
 		"NewAPI Avg Time",
 		"Weighted Avg Time",
+		"ZR Avg Time",
 	}
 	fmt.Println(strings.Join(header, "\t"))
 
@@ -162,6 +165,13 @@ func main() {
 			return res.Tokens
 		}, len(text))
 
+		zrCount, zrAvg := timedCount(func() int {
+			res := tokenest.EstimateText(text, tokenest.Options{
+				Strategy: tokenest.StrategyZR,
+			})
+			return res.Tokens
+		}, len(text))
+
 		gptTokenizerCount := 0
 		var gptTokenizerAvg time.Duration
 		if gptTokenizerErr == nil {
@@ -186,6 +196,8 @@ func main() {
 			fmt.Sprintf("%.2f%%", deviationSigned(actual, newapiCount)),
 			strconv.Itoa(weighted),
 			fmt.Sprintf("%.2f%%", deviationSigned(actual, weighted)),
+			strconv.Itoa(zrCount),
+			fmt.Sprintf("%.2f%%", deviationSigned(actual, zrCount)),
 			formatDuration(gptAvg),
 			formatDuration(gptTokenizerAvg),
 			formatDuration(ultraAvg),
@@ -193,6 +205,7 @@ func main() {
 			formatDuration(tokenxAvg),
 			formatDuration(newapiAvg),
 			formatDuration(weightedAvg),
+			formatDuration(zrAvg),
 		}
 		fmt.Println(strings.Join(row, "\t"))
 		rows = append(rows, row)
