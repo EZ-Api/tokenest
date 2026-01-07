@@ -1,6 +1,10 @@
 package tokenest
 
-import "math"
+import (
+	"math"
+
+	zrstrategy "github.com/EZ-Api/tokenest/strategy"
+)
 
 // Strategy defines the estimation algorithm to use.
 type Strategy int
@@ -172,7 +176,7 @@ func EstimateBytes(data []byte, opts Options) Result {
 		}
 		tokens = estimateWeighted(string(data), profile, opts.Explain, &breakdown)
 	case StrategyZR:
-		tokens = estimateZR(string(data))
+		tokens = zrstrategy.EstimateZR(string(data))
 	default:
 		tokens = estimateUltraFast(data)
 	}
@@ -210,7 +214,7 @@ func EstimateText(text string, opts Options) Result {
 		}
 		tokens = estimateWeighted(text, profile, opts.Explain, &breakdown)
 	case StrategyZR:
-		tokens = estimateZR(text)
+		tokens = zrstrategy.EstimateZR(text)
 	default:
 		tokens = estimateFast(text)
 	}
