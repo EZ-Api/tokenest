@@ -32,14 +32,25 @@ type tokenXStats struct {
 	CJKRunes   int
 	PunctRunes int
 	DigitRunes int
+	SpaceRunes int
+	UpperRunes int
+	HexRunes   int
 }
 
 type featureRow struct {
-	name   string
-	actual float64
-	base   float64
-	feat   []float64
+	name     string
+	actual   float64
+	base     float64
+	feat     []float64
+	category int
 }
+
+const (
+	CatGeneral = iota
+	CatCapital
+	CatDense
+	CatHex
+)
 
 type searchConfig struct {
 	charsPerToken  float64
@@ -92,6 +103,29 @@ func main() {
 		{name: "Mixed5 03", path: filepath.Join(datasetsDir, "mixed5_03_zh_en_de_fr_code.txt")},
 		{name: "Mixed5 04", path: filepath.Join(datasetsDir, "mixed5_04_zh_en_de_fr_code.txt")},
 		{name: "Mixed5 05", path: filepath.Join(datasetsDir, "mixed5_05_zh_en_de_fr_code.txt")},
+
+		// Adversary TokenX
+		{name: "Adversary TokenX 01", path: filepath.Join(datasetsDir, "adversary_tokenx_01_alnum_run.txt")},
+		{name: "Adversary TokenX 02", path: filepath.Join(datasetsDir, "adversary_tokenx_02_alnum_run.txt")},
+		{name: "Adversary TokenX 03", path: filepath.Join(datasetsDir, "adversary_tokenx_03_alnum_run.txt")},
+		{name: "Adversary TokenX 04", path: filepath.Join(datasetsDir, "adversary_tokenx_04_alnum_run.txt")},
+		{name: "Adversary TokenX 05", path: filepath.Join(datasetsDir, "adversary_tokenx_05_alnum_run.txt")},
+		{name: "Adversary TokenX 05 Hex", path: filepath.Join(datasetsDir, "adversary_tokenx_05_hex_stream.txt")},
+
+		// Adversary Weighted
+		{name: "Adversary Weighted 01", path: filepath.Join(datasetsDir, "adversary_weighted_01_alnum_run.txt")},
+		{name: "Adversary Weighted 02", path: filepath.Join(datasetsDir, "adversary_weighted_02_alnum_run.txt")},
+		{name: "Adversary Weighted 03", path: filepath.Join(datasetsDir, "adversary_weighted_03_alnum_run.txt")},
+		{name: "Adversary Weighted 04", path: filepath.Join(datasetsDir, "adversary_weighted_04_alnum_run.txt")},
+		{name: "Adversary Weighted 05", path: filepath.Join(datasetsDir, "adversary_weighted_05_alnum_run.txt")},
+		{name: "Adversary Weighted 05 Base64", path: filepath.Join(datasetsDir, "adversary_weighted_05_base64.txt")},
+
+		// Toxic
+		{name: "Toxic Base64", path: filepath.Join(datasetsDir, "toxic_base64.txt")},
+		{name: "Toxic Log", path: filepath.Join(datasetsDir, "toxic_log.txt")},
+		{name: "Toxic Markdown Table", path: filepath.Join(datasetsDir, "toxic_markdown_table.txt")},
+		{name: "Toxic Minified JS", path: filepath.Join(datasetsDir, "toxic_minified_js.txt")},
+		{name: "Toxic Minified JSON", path: filepath.Join(datasetsDir, "toxic_minified_json.txt")},
 	}
 
 	loaded := make([]sampleData, 0, len(samples))
@@ -133,7 +167,7 @@ func main() {
 
 	// Grid Search
 	var bestConfig searchConfig
-	var bestCoeffs []float64
+	var bestCoeffs map[int][]float64
 	bestTrainMAPE := math.MaxFloat64
 
 	fmt.Println("Starting grid search for hyperparameters...")
@@ -145,31 +179,79 @@ func main() {
 				shortThreshold: threshold,
 			}
 
-			// Build train features
+			// Build train features and split by category
 			trainRows := make([]featureRow, 0, len(trainItems))
+			rowsByCat := make(map[int][]featureRow)
+
 			for _, item := range trainItems {
-				trainRows = append(trainRows, makeFeatureRow(item.sample.name, item.text, enc, cfg))
+				row := makeFeatureRow(item.sample.name, item.text, enc, cfg)
+				trainRows = append(trainRows, row)
+				rowsByCat[row.category] = append(rowsByCat[row.category], row)
 			}
 
-			// Fit
-			x := make([][]float64, 0, len(trainRows))
-			y := make([]float64, 0, len(trainRows))
-			for _, row := range trainRows {
-				x = append(x, row.feat)
-				y = append(y, row.actual)
+			// Fit for each category
+			coeffsByCat := make(map[int][]float64)
+
+			// First, fit General category (or all data if we wanted a global fallback,
+			// but here we fit the subset of data classified as General)
+			// Actually, to ensure stability, let's fit General on ALL data first as a fallback,
+			// then refine for specific categories if possible?
+			// No, let's stick to strict subsets but add fallback logic.
+
+			// Helper to fit a subset
+			fitSubset := func(rows []featureRow) ([]float64, error) {
+				if len(rows) == 0 {
+					return nil, fmt.Errorf("empty subset")
+				}
+				x := make([][]float64, 0, len(rows))
+				y := make([]float64, 0, len(rows))
+				for _, row := range rows {
+					x = append(x, row.feat)
+					y = append(y, row.actual)
+				}
+				return solveLeastSquares(x, y)
 			}
 
-			coeffs, err := solveLeastSquares(x, y)
+			// 1. Fit General Category
+			genCoeffs, err := fitSubset(rowsByCat[CatGeneral])
 			if err != nil {
-				continue
+				// If we can't even fit General, this config is probably bad (or General subset is empty/singular)
+				// Try fitting on ALL rows as a desperate fallback for General
+				genCoeffs, err = fitSubset(trainRows)
+				if err != nil {
+					continue // Skip this config entirely
+				}
+			}
+			coeffsByCat[CatGeneral] = genCoeffs
+
+			// 2. Fit other categories, fallback to General if fail
+			for _, cat := range []int{CatCapital, CatDense, CatHex} {
+				rows := rowsByCat[cat]
+				if len(rows) < 2 {
+					coeffsByCat[cat] = genCoeffs
+					continue
+				}
+				catCoeffs, err := fitSubset(rows)
+				if err != nil {
+					// Try simplified fit (only base factor) if full fit fails
+					// This often happens if CJK/Digit/Punct ratios are all 0 for the subset
+					simpleCoeffs, err2 := fitSimple(rows)
+					if err2 == nil {
+						coeffsByCat[cat] = simpleCoeffs
+					} else {
+						coeffsByCat[cat] = genCoeffs
+					}
+				} else {
+					coeffsByCat[cat] = catCoeffs
+				}
 			}
 
-			// Evaluate on Train
-			mape := calculateMAPE(trainRows, coeffs)
+			// Evaluate on Train (using category-specific coeffs)
+			mape := calculateMAPE(trainRows, coeffsByCat)
 			if mape < bestTrainMAPE {
 				bestTrainMAPE = mape
 				bestConfig = cfg
-				bestCoeffs = coeffs
+				bestCoeffs = coeffsByCat
 			}
 		}
 	}
@@ -180,10 +262,10 @@ func main() {
 	fmt.Printf("ShortThreshold: %d\n", bestConfig.shortThreshold)
 
 	fmt.Println("\nWeighted fit coefficients (o200k_base):")
-	fmt.Printf("baseFactor=%.4f\n", bestCoeffs[0])
-	fmt.Printf("cjkRatioFactor=%.4f\n", bestCoeffs[1])
-	fmt.Printf("punctRatioFactor=%.4f\n", bestCoeffs[2])
-	fmt.Printf("digitRatioFactor=%.4f\n", bestCoeffs[3])
+	printCoeffs("General", bestCoeffs[CatGeneral])
+	printCoeffs("Capital", bestCoeffs[CatCapital])
+	printCoeffs("Dense", bestCoeffs[CatDense])
+	printCoeffs("Hex", bestCoeffs[CatHex])
 
 	// Re-evaluate on Train with best config
 	fmt.Println("\n=== TRAIN SET EVALUATION (Best Config) ===")
@@ -201,16 +283,6 @@ func main() {
 	}
 	evaluate(finalTestRows, bestCoeffs)
 
-	fmt.Println("\nSuggested tuning snippet:")
-	fmt.Printf("// Update tokenest/weighted.go constants:\n")
-	fmt.Printf("tokenXDefaultCharsPerToken = %.1f\n", bestConfig.charsPerToken)
-	fmt.Printf("tokenXShortTokenThreshold  = %d\n", bestConfig.shortThreshold)
-	fmt.Printf("\n// Update tuning coefficients:\n")
-	fmt.Printf("baseFactor: %.4f,\n", bestCoeffs[0])
-	fmt.Printf("cjkRatioFactor: %.4f,\n", bestCoeffs[1])
-	fmt.Printf("punctRatioFactor: %.4f,\n", bestCoeffs[2])
-	fmt.Printf("digitRatioFactor: %.4f,\n", bestCoeffs[3])
-
 	fmt.Println("\nCurrent Weighted estimate (library, untuned) per sample (Full Text):")
 	for _, item := range loaded {
 		res := tokenest.EstimateText(item.text, tokenest.Options{
@@ -221,10 +293,32 @@ func main() {
 	}
 }
 
-func calculateMAPE(rows []featureRow, coeffs []float64) float64 {
+func printCoeffs(label string, coeffs []float64) {
+	if len(coeffs) < 4 {
+		fmt.Printf("[%s] No coefficients (using default/fallback)\n", label)
+		return
+	}
+	fmt.Printf("[%s]\n", label)
+	fmt.Printf("  baseFactor: %.4f,\n", coeffs[0])
+	fmt.Printf("  cjkRatioFactor: %.4f,\n", coeffs[1])
+	fmt.Printf("  punctRatioFactor: %.4f,\n", coeffs[2])
+	fmt.Printf("  digitRatioFactor: %.4f,\n", coeffs[3])
+	if len(coeffs) > 4 {
+		fmt.Printf("  cjkSqFactor: %.4f,\n", coeffs[4])
+		fmt.Printf("  punctSqFactor: %.4f,\n", coeffs[5])
+		fmt.Printf("  digitSqFactor: %.4f,\n", coeffs[6])
+		fmt.Printf("  cjkPunctFactor: %.4f,\n", coeffs[7])
+	}
+}
+
+func calculateMAPE(rows []featureRow, coeffsMap map[int][]float64) float64 {
 	var totalAbsPct float64
 	count := 0
 	for _, row := range rows {
+		coeffs := coeffsMap[row.category]
+		if len(coeffs) == 0 {
+			coeffs = coeffsMap[CatGeneral]
+		}
 		pred := predict(coeffs, row.feat)
 		if row.actual > 0 {
 			totalAbsPct += math.Abs(pred-row.actual) / row.actual * 100
@@ -237,28 +331,83 @@ func calculateMAPE(rows []featureRow, coeffs []float64) float64 {
 	return totalAbsPct / float64(count)
 }
 
+func classify(stats tokenXStats) int {
+	total := float64(stats.TotalRunes)
+	if total == 0 {
+		return CatGeneral
+	}
+
+	// Safety: Short text is unstable for statistical classification.
+	// Force General for very short texts to avoid misclassification (e.g. "Dense").
+	if total < 50 {
+		return CatGeneral
+	}
+
+	// Rule 1: Capital
+	// If significant portion of content is uppercase
+	// Note: TotalRunes includes everything (CJK, Punct, Digit, Letters).
+	if float64(stats.UpperRunes)/total > 0.4 {
+		return CatCapital
+	}
+
+	// Rule 2: Dense (Low whitespace)
+	// In estimateTokenXWithStats, we increment stats.SpaceRunes when we see space,
+	// BUT spaces are NOT included in segment processing (estimateTokenXSegment returns 0 for space segments).
+	// So TotalRunes usually does NOT include spaces.
+	// We need to be careful with the ratio denominator.
+	// Let's look at space density relative to visible characters.
+	if total > 0 {
+		spaceRatio := float64(stats.SpaceRunes) / total
+		// Normal text usually has ~0.15-0.2 spaces per char.
+		// Minified code or hex dumps have very few.
+		if spaceRatio < 0.02 {
+			// Check for Hex
+			if float64(stats.HexRunes)/total > 0.95 {
+				return CatHex
+			}
+			return CatDense
+		}
+	}
+
+	return CatGeneral
+}
+
 func makeFeatureRow(name string, text string, enc *tiktoken.Tiktoken, cfg searchConfig) featureRow {
 	actual := float64(len(enc.Encode(text, nil, nil)))
 	baseTokens, stats := estimateTokenXWithStats(text, cfg)
 	features := buildFeatures(baseTokens, stats)
+	cat := classify(stats)
 	return featureRow{
-		name:   name,
-		actual: actual,
-		base:   float64(baseTokens),
-		feat:   features,
+		name:     name,
+		actual:   actual,
+		base:     float64(baseTokens),
+		feat:     features,
+		category: cat,
 	}
 }
 
-func evaluate(rows []featureRow, coeffs []float64) {
+func evaluate(rows []featureRow, coeffsMap map[int][]float64) {
 	var totalAbsPct float64
 	for _, row := range rows {
+		coeffs := coeffsMap[row.category]
+		if len(coeffs) == 0 {
+			coeffs = coeffsMap[CatGeneral]
+		}
 		pred := predict(coeffs, row.feat)
 		pct := 0.0
 		if row.actual > 0 {
 			pct = math.Abs(pred-row.actual) / row.actual * 100
 		}
 		totalAbsPct += pct
-		fmt.Printf("%s\tactual=%.0f\tpred=%.0f\tape=%.2f%%\n", row.name, row.actual, pred, pct)
+		catName := "General"
+		if row.category == CatCapital {
+			catName = "Capital"
+		} else if row.category == CatDense {
+			catName = "Dense"
+		} else if row.category == CatHex {
+			catName = "Hex"
+		}
+		fmt.Printf("%s [%s]\tactual=%.0f\tpred=%.0f\tape=%.2f%%\n", row.name, catName, row.actual, pred, pct)
 	}
 	if len(rows) > 0 {
 		fmt.Printf("MAPE: %.2f%%\n", totalAbsPct/float64(len(rows)))
@@ -354,6 +503,12 @@ func buildFeatures(baseTokens int, stats tokenXStats) []float64 {
 		base * cjkRatio,
 		base * punctRatio,
 		base * digitRatio,
+		// Quadratic terms
+		base * cjkRatio * cjkRatio,
+		base * punctRatio * punctRatio,
+		base * digitRatio * digitRatio,
+		// Interaction terms
+		base * cjkRatio * punctRatio,
 	}
 }
 
@@ -386,6 +541,21 @@ func solveLeastSquares(x [][]float64, y []float64) ([]float64, error) {
 	}
 
 	return solveLinearSystem(xtx, xty)
+}
+
+func fitSimple(rows []featureRow) ([]float64, error) {
+	// Fit only y = a * base
+	var sumXY, sumXX float64
+	for _, row := range rows {
+		sumXY += row.base * row.actual
+		sumXX += row.base * row.base
+	}
+	if sumXX == 0 {
+		return nil, fmt.Errorf("singular")
+	}
+	a := sumXY / sumXX
+	// Return 4 coeffs, others 0
+	return []float64{a, 0, 0, 0}, nil
 }
 
 func solveLinearSystem(a [][]float64, b []float64) ([]float64, error) {
@@ -439,6 +609,9 @@ func estimateTokenXWithStats(text string, cfg searchConfig) (int, tokenXStats) {
 	first := true
 
 	for idx, r := range text {
+		if unicode.IsSpace(r) {
+			stats.SpaceRunes++
+		}
 		currentType := tokenXSegmentTypeForRune(r)
 		if first {
 			first = false
@@ -500,6 +673,12 @@ func estimateTokenXSegment(segment string, stats *tokenXStats, cfg searchConfig)
 		}
 		if r >= '0' && r <= '9' {
 			stats.DigitRunes++
+		}
+		if unicode.IsUpper(r) {
+			stats.UpperRunes++
+		}
+		if isHexRune(r) {
+			stats.HexRunes++
 		}
 	}
 
@@ -649,6 +828,19 @@ func isLatinAlphaNum(r rune) bool {
 		return true
 	}
 	if r >= 0x00c0 && r <= 0x00ff {
+		return true
+	}
+	return false
+}
+
+func isHexRune(r rune) bool {
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	if r >= 'a' && r <= 'f' {
+		return true
+	}
+	if r >= 'A' && r <= 'F' {
 		return true
 	}
 	return false
