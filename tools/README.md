@@ -20,7 +20,7 @@ Notes:
 - Excel output includes deviation bar charts.
 
 ## fit
-Fits Weighted coefficients using linear regression against `tiktoken`.
+Fits ZR/Weighted-style coefficients against `tiktoken` and can export a reusable ZR config JSON.
 
 Run:
 ```bash
@@ -29,7 +29,52 @@ GOWORK=off go run .
 ```
 
 Output:
-- Prints coefficients and per-sample errors.
+- Default (no flags): parallel grid search over thresholds on the curated dataset, prints best config + coefficients + train/test evaluation.
+- With flags: supports robust losses (Huber/IRLS), ridge regularization, JSONL log training, and `-out-zr-config` export.
+
+### Common workflows
+
+**1) Legacy grid search (curated dataset)**
+```bash
+cd tokenest/tools/fit
+GOWORK=off go run .
+```
+
+Export best config to JSON:
+```bash
+GOWORK=off go run . -out-zr-config tokenest/report/zr-config.json
+```
+
+**2) Fixed-config robust refit (curated dataset)**
+Use this to try robust losses without paying the grid-search cost:
+```bash
+GOWORK=off go run . -no-grid -loss huber_rel -huber-delta 0.20 -irls-iters 5 -ridge-lambda 0.001 -out-zr-config tokenest/report/zr-config.json
+```
+
+**3) Train from JSONL logs (future dataset)**
+JSONL mode expects one JSON object per line. You provide field selectors:
+- `-jsonl-text`: dot-path to extracted text field
+- `-jsonl-tokens`: dot-path to actual token field (optional; empty => compute with `tiktoken` o200k_base)
+```bash
+GOWORK=off go run . \
+  -jsonl /path/to/logs.jsonl \
+  -jsonl-text request.text \
+  -jsonl-tokens usage.total_tokens \
+  -val-pct 0.2 -split-salt tokenest \
+  -loss huber_rel -huber-delta 0.20 -irls-iters 5 \
+  -ridge-lambda 0.001 \
+  -bucket-cap 5000 \
+  -out-zr-config tokenest/report/zr-config.json
+```
+
+**Conservative (underestimate-averse) mode**
+```bash
+GOWORK=off go run . -no-grid -loss asym_huber_rel -asym-alpha 2.0 -huber-delta 0.20 -irls-iters 5
+```
+
+### Using the output
+- Today: copy the exported coefficients/thresholds into `tokenest/strategy/strategyTest1_params.go` (ZR hardcoded params).
+- Future: a separate change (`update-zr-explain-config`) is planned to allow loading ZRConfig JSON at runtime without recompiling.
 
 ## adversary
 Stress-tests worst-case under/overestimation by generating adversarial text and comparing against `tiktoken`.
