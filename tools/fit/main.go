@@ -41,14 +41,6 @@ type tokenXStats struct {
 	CodePunct  int
 }
 
-type featureRow struct {
-	name     string
-	actual   float64
-	base     float64
-	feat     []float64
-	category int
-}
-
 const (
 	CatGeneral = iota
 	CatCapital
@@ -69,6 +61,12 @@ type searchConfig struct {
 }
 
 func main() {
+	opts, err := parseCLI()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
 	enc := mustEncoding()
 	repoRoot := findRepoRoot()
 	datasetsDir := filepath.Join(repoRoot, "tokenest", "datasets", "test")
@@ -185,17 +183,36 @@ func main() {
 		testItems[i].actual = float64(len(enc.Encode(testItems[i].text, nil, nil)))
 	}
 
+	if opts.JSONLPath != "" {
+		if err := runJSONLFit(enc, opts, loaded); err != nil {
+			fmt.Fprintf(os.Stderr, "fit error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if opts.NoGrid {
+		if err := runFixedConfigFit(enc, opts, trainItems, testItems, loaded); err != nil {
+			fmt.Fprintf(os.Stderr, "fit error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Grid Search
 	var bestConfig searchConfig
 	var bestCoeffs map[int][]float64
 	bestTrainMAPE := math.MaxFloat64
+	bestValMAPE := math.MaxFloat64
+	bestSelect := math.MaxFloat64
 
 	fmt.Println("Starting parallel grid search for hyperparameters...")
 
 	type jobResult struct {
-		cfg    searchConfig
-		mape   float64
-		coeffs map[int][]float64
+		cfg       searchConfig
+		selectVal float64
+		trainMAPE float64
+		valMAPE   float64
+		coeffs    map[int][]float64
 	}
 
 	jobs := make(chan searchConfig, 1000)
@@ -211,86 +228,27 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for cfg := range jobs {
-				// Build train features and split by category
-				trainRows := make([]featureRow, 0, len(trainItems))
-				rowsByCat := make(map[int][]featureRow)
-
+				trainRows := make([]fitRow, 0, len(trainItems))
 				for _, item := range trainItems {
-					// Use pre-calculated actual
-					row := makeFeatureRowWithActual(item.sample.name, item.text, item.actual, cfg)
-					trainRows = append(trainRows, row)
-					rowsByCat[row.category] = append(rowsByCat[row.category], row)
+					trainRows = append(trainRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, cfg))
+				}
+				testRows := make([]fitRow, 0, len(testItems))
+				for _, item := range testItems {
+					testRows = append(testRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, cfg))
 				}
 
-				// Fit for each category
-				coeffsByCat := make(map[int][]float64)
-
-				// Helper to fit a subset
-				fitSubset := func(rows []featureRow) ([]float64, error) {
-					if len(rows) == 0 {
-						return nil, fmt.Errorf("empty subset")
-					}
-					x := make([][]float64, 0, len(rows))
-					y := make([]float64, 0, len(rows))
-					for _, row := range rows {
-						x = append(x, row.feat)
-						y = append(y, row.actual)
-					}
-					return solveLeastSquares(x, y)
-				}
-
-				// 1. Fit General Category
-				genCoeffs, err := fitSubset(rowsByCat[CatGeneral])
+				fitRes, err := fitByCategory(sliceSource{rows: trainRows}, opts.Loss, opts.RidgeLambda, nil)
 				if err != nil {
-					// Fallback to fitting all rows if General subset fails
-					genCoeffs, err = fitSubset(trainRows)
-					if err != nil {
-						continue // Skip this config
-					}
-				}
-				coeffsByCat[CatGeneral] = genCoeffs
-
-				// 2. Fit other categories
-				for _, cat := range []int{CatCapital, CatDense, CatHex, CatAlnum} {
-					rows := rowsByCat[cat]
-					if len(rows) < 2 {
-						// Fallback logic
-						if cat == CatAlnum {
-							if capCoeffs, ok := coeffsByCat[CatCapital]; ok && len(capCoeffs) > 0 {
-								coeffsByCat[cat] = capCoeffs
-							} else {
-								coeffsByCat[cat] = genCoeffs
-							}
-						} else {
-							coeffsByCat[cat] = genCoeffs
-						}
-						continue
-					}
-					catCoeffs, err := fitSubset(rows)
-					if err != nil {
-						simpleCoeffs, err2 := fitSimple(rows)
-						if err2 == nil {
-							coeffsByCat[cat] = simpleCoeffs
-						} else {
-							// Fallback on error
-							if cat == CatAlnum {
-								if capCoeffs, ok := coeffsByCat[CatCapital]; ok && len(capCoeffs) > 0 {
-									coeffsByCat[cat] = capCoeffs
-								} else {
-									coeffsByCat[cat] = genCoeffs
-								}
-							} else {
-								coeffsByCat[cat] = genCoeffs
-							}
-						}
-					} else {
-						coeffsByCat[cat] = catCoeffs
-					}
+					continue
 				}
 
-				// Evaluate
-				mape := calculateMAPE(trainRows, coeffsByCat)
-				results <- jobResult{cfg: cfg, mape: mape, coeffs: coeffsByCat}
+				trainMAPE := calculateMAPE(trainRows, fitRes.Coeffs)
+				valMAPE := calculateMAPE(testRows, fitRes.Coeffs)
+				selectVal := trainMAPE
+				if opts.Select == "val_mape" {
+					selectVal = valMAPE
+				}
+				results <- jobResult{cfg: cfg, selectVal: selectVal, trainMAPE: trainMAPE, valMAPE: valMAPE, coeffs: fitRes.Coeffs}
 			}
 		}()
 	}
@@ -304,8 +262,10 @@ func main() {
 			if count%1000 == 0 {
 				fmt.Printf("Processed %d configs...\r", count)
 			}
-			if res.mape < bestTrainMAPE {
-				bestTrainMAPE = res.mape
+			if res.selectVal < bestSelect {
+				bestSelect = res.selectVal
+				bestTrainMAPE = res.trainMAPE
+				bestValMAPE = res.valMAPE
 				bestConfig = res.cfg
 				bestCoeffs = res.coeffs
 			}
@@ -341,6 +301,9 @@ func main() {
 
 	fmt.Printf("\n=== BEST CONFIGURATION FOUND ===\n")
 	fmt.Printf("Train MAPE: %.4f%%\n", bestTrainMAPE)
+	if opts.Select == "val_mape" {
+		fmt.Printf("Val MAPE: %.4f%%\n", bestValMAPE)
+	}
 	fmt.Printf("CharsPerToken: %.1f\n", bestConfig.charsPerToken)
 	fmt.Printf("ShortThreshold: %d\n", bestConfig.shortThreshold)
 	fmt.Printf("CapitalThreshold: %.2f\n", bestConfig.capitalThreshold)
@@ -357,7 +320,7 @@ func main() {
 
 	// Re-evaluate on Train with best config
 	fmt.Println("\n=== TRAIN SET EVALUATION (Best Config) ===")
-	finalTrainRows := make([]featureRow, 0, len(trainItems))
+	finalTrainRows := make([]fitRow, 0, len(trainItems))
 	for _, item := range trainItems {
 		finalTrainRows = append(finalTrainRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, bestConfig))
 	}
@@ -365,11 +328,40 @@ func main() {
 
 	// Re-evaluate on Test with best config
 	fmt.Println("\n=== TEST SET EVALUATION (Best Config) ===")
-	finalTestRows := make([]featureRow, 0, len(testItems))
+	finalTestRows := make([]fitRow, 0, len(testItems))
 	for _, item := range testItems {
 		finalTestRows = append(finalTestRows, makeFeatureRowWithActual(item.sample.name, item.text, item.actual, bestConfig))
 	}
 	evaluate(finalTestRows, bestCoeffs)
+
+	if opts.OutZRConfig != "" {
+		trainMetrics, _ := computeMetrics(sliceSource{rows: finalTrainRows}, bestCoeffs)
+		valMetrics, _ := computeMetrics(sliceSource{rows: finalTestRows}, bestCoeffs)
+
+		anchorRows := make([]fitRow, 0, len(loaded))
+		for _, item := range loaded {
+			actual := float64(len(enc.Encode(item.text, nil, nil)))
+			anchorRows = append(anchorRows, makeFeatureRowWithActual(item.sample.name, item.text, actual, bestConfig))
+		}
+		anchorMetrics, _ := computeMetrics(sliceSource{rows: anchorRows}, bestCoeffs)
+
+		meta := &zrFitMetadataJSON{
+			Loss:       string(opts.Loss.Kind),
+			HuberDelta: opts.Loss.HuberDelta,
+			IRLSIters:  opts.Loss.IRLSIters,
+			Ridge:      opts.RidgeLambda,
+			AsymAlpha:  opts.Loss.AsymAlpha,
+			Dataset:    "curated-grid",
+			Train:      &trainMetrics,
+			Val:        &valMetrics,
+			Anchor:     &anchorMetrics,
+		}
+		if err := writeZRConfigFile(opts.OutZRConfig, bestConfig, bestCoeffs, meta); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write zr config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nWrote ZR config: %s\n", opts.OutZRConfig)
+	}
 
 	fmt.Println("\nCurrent Weighted estimate (library, untuned) per sample (Full Text):")
 	for _, item := range loaded {
@@ -391,7 +383,15 @@ func printCoeffs(label string, coeffs []float64) {
 	fmt.Printf("  cjkRatioFactor: %.4f,\n", coeffs[1])
 	fmt.Printf("  punctRatioFactor: %.4f,\n", coeffs[2])
 	fmt.Printf("  digitRatioFactor: %.4f,\n", coeffs[3])
-	if len(coeffs) > 4 {
+
+	hasHigherOrder := false
+	for i := 4; i < len(coeffs) && i < 8; i++ {
+		if coeffs[i] != 0 {
+			hasHigherOrder = true
+			break
+		}
+	}
+	if len(coeffs) >= 8 && hasHigherOrder {
 		fmt.Printf("  cjkSqFactor: %.4f,\n", coeffs[4])
 		fmt.Printf("  punctSqFactor: %.4f,\n", coeffs[5])
 		fmt.Printf("  digitSqFactor: %.4f,\n", coeffs[6])
@@ -399,7 +399,7 @@ func printCoeffs(label string, coeffs []float64) {
 	}
 }
 
-func calculateMAPE(rows []featureRow, coeffsMap map[int][]float64) float64 {
+func calculateMAPE(rows []fitRow, coeffsMap map[int][]float64) float64 {
 	var totalAbsPct float64
 	count := 0
 	for _, row := range rows {
@@ -467,25 +467,24 @@ func classify(stats tokenXStats, cfg searchConfig) int {
 	return CatGeneral
 }
 
-func makeFeatureRow(name string, text string, enc *tiktoken.Tiktoken, cfg searchConfig) featureRow {
+func makeFeatureRow(name string, text string, enc *tiktoken.Tiktoken, cfg searchConfig) fitRow {
 	actual := float64(len(enc.Encode(text, nil, nil)))
 	return makeFeatureRowWithActual(name, text, actual, cfg)
 }
 
-func makeFeatureRowWithActual(name string, text string, actual float64, cfg searchConfig) featureRow {
+func makeFeatureRowWithActual(name string, text string, actual float64, cfg searchConfig) fitRow {
 	baseTokens, stats := estimateTokenXWithStats(text, cfg)
 	features := buildFeatures(baseTokens, stats)
 	cat := classify(stats, cfg)
-	return featureRow{
+	return fitRow{
 		name:     name,
 		actual:   actual,
-		base:     float64(baseTokens),
 		feat:     features,
 		category: cat,
 	}
 }
 
-func evaluate(rows []featureRow, coeffsMap map[int][]float64) {
+func evaluate(rows []fitRow, coeffsMap map[int][]float64) {
 	var totalAbsPct float64
 	for _, row := range rows {
 		coeffs := coeffsMap[row.category]
@@ -586,9 +585,9 @@ func downloadText(url string) (string, error) {
 	return string(body), nil
 }
 
-func buildFeatures(baseTokens int, stats tokenXStats) []float64 {
+func buildFeatures(baseTokens int, stats tokenXStats) [8]float64 {
 	if baseTokens <= 0 {
-		return []float64{0, 0, 0, 0}
+		return [8]float64{}
 	}
 	total := stats.TotalRunes
 	if total == 0 {
@@ -599,24 +598,26 @@ func buildFeatures(baseTokens int, stats tokenXStats) []float64 {
 	punctRatio := float64(stats.PunctRunes) / float64(total)
 	digitRatio := float64(stats.DigitRunes) / float64(total)
 
-	return []float64{
+	return [8]float64{
 		base,
 		base * cjkRatio,
 		base * punctRatio,
 		base * digitRatio,
-		// Quadratic terms
 		base * cjkRatio * cjkRatio,
 		base * punctRatio * punctRatio,
 		base * digitRatio * digitRatio,
-		// Interaction terms
 		base * cjkRatio * punctRatio,
 	}
 }
 
-func predict(coeffs []float64, features []float64) float64 {
+func predict(coeffs []float64, features [8]float64) float64 {
 	sum := 0.0
-	for i, coef := range coeffs {
-		sum += coef * features[i]
+	limit := len(coeffs)
+	if limit > featureCount {
+		limit = featureCount
+	}
+	for i := 0; i < limit; i++ {
+		sum += coeffs[i] * features[i]
 	}
 	return sum
 }
@@ -644,19 +645,19 @@ func solveLeastSquares(x [][]float64, y []float64) ([]float64, error) {
 	return solveLinearSystem(xtx, xty)
 }
 
-func fitSimple(rows []featureRow) ([]float64, error) {
+func fitSimple(rows []fitRow) ([]float64, error) {
 	// Fit only y = a * base
 	var sumXY, sumXX float64
 	for _, row := range rows {
-		sumXY += row.base * row.actual
-		sumXX += row.base * row.base
+		base := row.feat[0]
+		sumXY += base * row.actual
+		sumXX += base * base
 	}
 	if sumXX == 0 {
 		return nil, fmt.Errorf("singular")
 	}
 	a := sumXY / sumXX
-	// Return 4 coeffs, others 0
-	return []float64{a, 0, 0, 0}, nil
+	return []float64{a, 0, 0, 0, 0, 0, 0, 0}, nil
 }
 
 func solveLinearSystem(a [][]float64, b []float64) ([]float64, error) {
